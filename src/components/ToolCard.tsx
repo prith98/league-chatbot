@@ -39,20 +39,105 @@ function meta(part: ToolPart) {
   return TOOL_META[key] ?? { icon: "⚙️", label: key };
 }
 
+// Ranked tier → accent colour (LoL client crest palette).
+const TIER_STYLE: Record<string, string> = {
+  IRON: "#7a6b63",
+  BRONZE: "#b06b3f",
+  SILVER: "#9fb1bd",
+  GOLD: "#f0b65c",
+  PLATINUM: "#4fd0c5",
+  EMERALD: "#36d97c",
+  DIAMOND: "#6fa8ff",
+  MASTER: "#c25ce0",
+  GRANDMASTER: "#ff5a52",
+  CHALLENGER: "#6fe0f2",
+};
+
+/** The champion to feature as a faded splash backdrop, if any. */
+function featureChampion(part: ToolPart): string | null {
+  const key = toolKey(part);
+  const out = part.output as Record<string, unknown> | undefined;
+  if (!out) return null;
+  if (key === "getMatchHistory") {
+    return (out.matches as { champion?: string }[] | undefined)?.[0]?.champion ?? null;
+  }
+  if (key === "getChampionMastery") {
+    return (out.top as { champion?: string }[] | undefined)?.[0]?.champion ?? null;
+  }
+  return null;
+}
+
+function splashUrl(champion: string): string {
+  return `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${champion}_0.jpg`;
+}
+
+/** Faded champion splash that bleeds in from the right of a tool card. */
+function ChampSplash({ champion }: { champion: string }) {
+  const [ok, setOk] = useState(true);
+  if (!ok) return null;
+  return (
+    <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={splashUrl(champion)}
+        alt=""
+        onError={() => setOk(false)}
+        className="absolute right-0 top-0 h-full w-3/4 object-cover object-[center_20%] opacity-[0.22]"
+        style={{
+          maskImage: "linear-gradient(90deg, transparent, #000 62%)",
+          WebkitMaskImage: "linear-gradient(90deg, transparent, #000 62%)",
+        }}
+      />
+      <div className="absolute inset-0 bg-gradient-to-t from-abyss/85 via-abyss/10 to-abyss/40" />
+    </div>
+  );
+}
+
+/** Small faceted hextech crystal tinted to a ranked tier. */
+function TierGem({ color }: { color: string }) {
+  return (
+    <span className="relative inline-flex h-7 w-7 shrink-0 items-center justify-center">
+      <span className="absolute inset-1 rounded-full opacity-40 blur-[5px]" style={{ background: color }} />
+      <svg width="22" height="22" viewBox="0 0 24 24" className="relative">
+        <polygon
+          points="12,1.5 21,6.75 21,17.25 12,22.5 3,17.25 3,6.75"
+          fill={color}
+          fillOpacity="0.22"
+          stroke={color}
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+        />
+        <polygon
+          points="12,5.5 17.5,8.6 17.5,15.4 12,18.5 6.5,15.4 6.5,8.6"
+          fill="none"
+          stroke={color}
+          strokeOpacity="0.5"
+          strokeWidth="1"
+          strokeLinejoin="round"
+        />
+        <circle cx="12" cy="12" r="2" fill={color} />
+      </svg>
+    </span>
+  );
+}
+
 /** Hextech console for a single tool call: a scanning state, then structured intel. */
 export function ToolCard({ part }: { part: ToolPart }) {
   const { icon, label } = meta(part);
   const done = part.state === "output-available";
   const errored = part.state === "output-error";
   const running = !done && !errored;
+  const champ = done ? featureChampion(part) : null;
 
   return (
     <div className="relative my-2.5 overflow-hidden rounded-md border border-gold-deep/40 bg-abyss/70">
-      {/* top hairline accent */}
-      <div className="h-px w-full bg-gradient-to-r from-transparent via-gold/50 to-transparent" />
-      {running && <div className="scan-bar" />}
+      {champ && <ChampSplash champion={champ} />}
 
-      <div className="relative flex items-center gap-2 px-3 py-2 text-xs">
+      {/* top hairline accent */}
+      <div className="relative z-10 h-px w-full bg-gradient-to-r from-transparent via-gold/50 to-transparent" />
+      {running && <div className="scan-bar z-10" />}
+
+      <div className="relative z-10 flex items-center gap-2 px-3 py-2 text-xs">
         <span className="text-sm">{icon}</span>
         <span className="font-semibold uppercase tracking-[0.12em] text-gold/90">
           {label}
@@ -71,9 +156,13 @@ export function ToolCard({ part }: { part: ToolPart }) {
         )}
       </div>
 
-      {done && <ToolResult part={part} />}
+      {done && (
+        <div className="relative z-10">
+          <ToolResult part={part} />
+        </div>
+      )}
       {errored && (
-        <div className="border-t border-gold-deep/30 px-3 py-2 text-xs text-loss/90">
+        <div className="relative z-10 border-t border-gold-deep/30 px-3 py-2 text-xs text-loss/90">
           {part.errorText}
         </div>
       )}
@@ -113,17 +202,52 @@ function SummonerResult({ data }: { data: Record<string, unknown> }) {
         </span>
       </div>
       {Array.isArray(ranked) ? (
-        <div className="space-y-1">
-          {(ranked as RankedRow[]).map((r) => (
-            <div key={r.queue} className="flex items-center gap-2">
-              <span className="w-16 text-parch-dim">{r.queue}</span>
-              <span className="font-semibold text-gold">{r.rank}</span>
-              <span className="text-parch">{r.leaguePoints} LP</span>
-              <span className="ml-auto text-parch">
-                {r.wins}W {r.losses}L · <span className="text-cream">{r.winRate}</span>
-              </span>
-            </div>
-          ))}
+        <div className="space-y-1.5">
+          {(ranked as RankedRow[]).map((r) => {
+            const [tierRaw = "", division = ""] = r.rank.split(" ");
+            const color = TIER_STYLE[tierRaw.toUpperCase()] ?? "#c8aa6e";
+            const tierLabel = tierRaw
+              ? tierRaw[0] + tierRaw.slice(1).toLowerCase()
+              : r.rank;
+            const wr = parseInt(r.winRate, 10);
+            return (
+              <div
+                key={r.queue}
+                className="flex items-center gap-2.5 rounded-md border border-gold-deep/25 bg-navy/50 px-2.5 py-1.5"
+              >
+                <TierGem color={color} />
+                <div className="min-w-0">
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="font-semibold" style={{ color }}>
+                      {tierLabel}
+                    </span>
+                    {division && <span className="text-cream">{division}</span>}
+                    <span className="text-[0.7rem] text-parch-dim">{r.leaguePoints} LP</span>
+                  </div>
+                  <div className="text-[0.62rem] uppercase tracking-[0.12em] text-parch-dim">
+                    {r.queue}
+                  </div>
+                </div>
+                <div className="ml-auto text-right">
+                  <div className="text-parch">
+                    {r.wins}W {r.losses}L
+                  </div>
+                  <div
+                    className={
+                      "text-[0.7rem] font-medium " +
+                      (Number.isFinite(wr)
+                        ? wr >= 50
+                          ? "text-win"
+                          : "text-loss/90"
+                        : "text-parch-dim")
+                    }
+                  >
+                    {r.winRate} WR
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       ) : (
         <span className="text-parch-dim">Unranked</span>

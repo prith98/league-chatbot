@@ -124,6 +124,7 @@ interface MatchDto {
       totalMinionsKilled: number;
       neutralMinionsKilled: number;
       goldEarned: number;
+      totalDamageDealtToChampions: number;
       teamPosition: string;
     }>;
   };
@@ -153,6 +154,70 @@ function getChampionMap(): Promise<Map<number, string>> {
     })().catch(() => new Map<number, string>());
   }
   return championMap;
+}
+
+// ---- Shared ranked-match fetching ----
+/** Per-game stats for one player in one ranked Summoner's Rift match. */
+interface GameStat {
+  matchId: string;
+  champion: string;
+  role: string;
+  win: boolean;
+  kills: number;
+  deaths: number;
+  assists: number;
+  cs: number;
+  gold: number;
+  damage: number;
+  durationMin: number;
+  queueId: number;
+}
+
+/**
+ * Fetch a player's recent RANKED Summoner's Rift games (Solo/Duo 420 + Flex 440)
+ * as raw per-game stats. Individual match fetches that fail (e.g. transient rate
+ * limit) are dropped rather than failing the whole batch.
+ */
+async function fetchRankedGames(
+  puuid: string,
+  routing: string,
+  count: number,
+): Promise<GameStat[]> {
+  // type=ranked returns only ranked Summoner's Rift queues (Solo/Duo + Flex).
+  const ids = await riotFetch<string[]>(
+    routing,
+    `/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=${count}&type=ranked`,
+  );
+
+  const games = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const m = await riotFetch<MatchDto>(routing, `/lol/match/v5/matches/${id}`);
+        // Defensive: keep only Ranked Solo/Duo (420) and Flex (440).
+        if (m.info.queueId !== 420 && m.info.queueId !== 440) return null;
+        const p = m.info.participants.find((x) => x.puuid === puuid);
+        if (!p) return null;
+        return {
+          matchId: id,
+          champion: p.championName,
+          role: p.teamPosition || "UNKNOWN",
+          win: p.win,
+          kills: p.kills,
+          deaths: p.deaths,
+          assists: p.assists,
+          cs: p.totalMinionsKilled + p.neutralMinionsKilled,
+          gold: p.goldEarned,
+          damage: p.totalDamageDealtToChampions,
+          durationMin: m.info.gameDuration / 60,
+          queueId: m.info.queueId,
+        } satisfies GameStat;
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return games.filter((g): g is GameStat => g !== null);
 }
 
 /** Tools the agent can call for player account & match data. */

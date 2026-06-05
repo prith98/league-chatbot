@@ -53,6 +53,7 @@ export default function Page() {
         <div className="flex items-center gap-3.5">
           <div className="relative shrink-0">
             <div className="absolute inset-0 animate-bloom rounded-full bg-arcane/20 blur-md" />
+            {busy && <StreamRing />}
             <RiftEmblem size={46} className="relative" />
           </div>
           <div className="min-w-0">
@@ -223,5 +224,23 @@ export default function Page() {
         </p>
       </form>
     </main>
+  );
+}
+
+/** Channeling ring — orbits the emblem while the agent works. */
+function StreamRing() {
+  return (
+    <span className="pointer-events-none absolute left-1/2 top-1/2 h-[66px] w-[66px] -translate-x-1/2 -translate-y-1/2">
+      <span className="absolute inset-0 rounded-full border border-gold/25" />
+      {/* counter-rotating dashed rune ring */}
+      <span
+        className="absolute inset-[3px] animate-spin rounded-full border border-dashed border-gold/30"
+        style={{ animationDuration: "9s", animationDirection: "reverse" }}
+      />
+      {/* orbiting arcane node */}
+      <span className="absolute inset-0 animate-spin" style={{ animationDuration: "6s" }}>
+        <span className="absolute left-1/2 top-0 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-arcane shadow-[0_0_8px_2px_rgba(10,200,185,0.7)]" />
+      </span>
+    </span>
   );
 }
