@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
  * champion icon URLs. Champion names from match-v5 line up with Data Dragon IDs
  * for the vast majority of champions.
  */
-const FALLBACK_VERSION = "15.1.1";
+const FALLBACK_VERSION = "16.11.1";
 let cached: string | null = null;
 let inflight: Promise<string> | null = null;
 
