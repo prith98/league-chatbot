@@ -195,41 +195,46 @@ export const riotTools = {
 
   getMatchHistory: tool({
     description:
-      "Get a player's recent matches with per-game stats (champion, role, K/D/A, CS, win/loss, queue). Use to analyze recent performance and trends.",
+      "Get a player's recent RANKED Summoner's Rift games (Solo/Duo and Flex only — ARAM, normals, and other modes are excluded) with per-game stats (champion, role, K/D/A, CS, win/loss, queue). Use to analyze recent ranked performance and trends.",
     inputSchema: z.object({
       riotId: z.string().describe('Riot ID in "Name#TAG" format'),
       region: regionField,
-      count: z.number().int().min(1).max(10).default(5).describe("How many recent matches to fetch"),
+      count: z.number().int().min(1).max(10).default(5).describe("How many recent ranked games to fetch"),
     }),
     execute: async ({ riotId, region, count }) => {
       const puuid = await resolvePuuid(riotId, region);
       const routing = `${PLATFORM_TO_REGION[region]}.api.riotgames.com`;
+      // type=ranked returns only ranked Summoner's Rift queues (Solo/Duo 420 + Flex 440).
       const ids = await riotFetch<string[]>(
         routing,
-        `/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=${count}`,
+        `/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=${count}&type=ranked`,
       );
 
-      const matches = await Promise.all(
-        ids.map(async (id) => {
-          const m = await riotFetch<MatchDto>(routing, `/lol/match/v5/matches/${id}`);
-          const p = m.info.participants.find((x) => x.puuid === puuid)!;
-          const cs = p.totalMinionsKilled + p.neutralMinionsKilled;
-          const mins = m.info.gameDuration / 60;
-          return {
-            matchId: id,
-            champion: p.championName,
-            role: p.teamPosition || "UNKNOWN",
-            result: p.win ? "Win" : "Loss",
-            kda: `${p.kills}/${p.deaths}/${p.assists}`,
-            kdaRatio: Number(((p.kills + p.assists) / Math.max(1, p.deaths)).toFixed(2)),
-            cs,
-            csPerMin: Number((cs / mins).toFixed(1)),
-            gold: p.goldEarned,
-            queue: QUEUE_NAMES[m.info.queueId] ?? `Queue ${m.info.queueId}`,
-            durationMin: Math.round(mins),
-          };
-        }),
-      );
+      const matches = (
+        await Promise.all(
+          ids.map(async (id) => {
+            const m = await riotFetch<MatchDto>(routing, `/lol/match/v5/matches/${id}`);
+            // Defensive: keep only Ranked Solo/Duo (420) and Flex (440).
+            if (m.info.queueId !== 420 && m.info.queueId !== 440) return null;
+            const p = m.info.participants.find((x) => x.puuid === puuid)!;
+            const cs = p.totalMinionsKilled + p.neutralMinionsKilled;
+            const mins = m.info.gameDuration / 60;
+            return {
+              matchId: id,
+              champion: p.championName,
+              role: p.teamPosition || "UNKNOWN",
+              result: p.win ? "Win" : "Loss",
+              kda: `${p.kills}/${p.deaths}/${p.assists}`,
+              kdaRatio: Number(((p.kills + p.assists) / Math.max(1, p.deaths)).toFixed(2)),
+              cs,
+              csPerMin: Number((cs / mins).toFixed(1)),
+              gold: p.goldEarned,
+              queue: QUEUE_NAMES[m.info.queueId] ?? `Queue ${m.info.queueId}`,
+              durationMin: Math.round(mins),
+            };
+          }),
+        )
+      ).filter((m): m is NonNullable<typeof m> => m !== null);
 
       return { riotId, region, matches };
     },

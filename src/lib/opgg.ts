@@ -52,7 +52,16 @@ export async function loadOpggTools(): Promise<ToolSet> {
     const toolSet: ToolSet = {};
     // Keep only League of Legends tools — the server also exposes TFT/Valorant
     // tools we don't want cluttering this agent's tool list.
-    for (const t of tools.filter((t) => t.name.startsWith("lol_"))) {
+    //
+    // Also exclude OP.GG's player/match tools: those overlap with our Riot tools
+    // and aren't ranked-filtered. We want all player data to flow through the
+    // Riot tools (source of truth, restricted to ranked Summoner's Rift).
+    const exclude = new Set([
+      "lol_get_summoner_profile",
+      "lol_get_summoner_game_detail",
+      "lol_list_summoner_matches",
+    ]);
+    for (const t of tools.filter((t) => t.name.startsWith("lol_") && !exclude.has(t.name))) {
       toolSet[t.name] = dynamicTool({
         description: t.description ?? `OP.GG tool: ${t.name}`,
         inputSchema: jsonSchema((t.inputSchema as object) ?? { type: "object", properties: {} }),
