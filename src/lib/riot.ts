@@ -1,31 +1,15 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { PLATFORM_TO_REGION, PLATFORMS } from "@/lib/regions";
 
 /**
  * Riot Games API client + agent tools.
  *
- * Riot uses two routing schemes:
- *  - PLATFORM routing (na1, euw1, kr, ...) for summoner-v4 / league-v4
- *  - REGIONAL routing (americas, europe, asia) for account-v1 / match-v5
+ * Routing tables (PLATFORM vs REGIONAL) live in src/lib/regions.ts so the
+ * client-side region picker can share them.
  *
  * Docs: https://developer.riotgames.com/apis
  */
-
-const PLATFORM_TO_REGION: Record<string, "americas" | "europe" | "asia"> = {
-  na1: "americas",
-  br1: "americas",
-  la1: "americas",
-  la2: "americas",
-  oc1: "americas",
-  euw1: "europe",
-  eun1: "europe",
-  tr1: "europe",
-  ru: "europe",
-  kr: "asia",
-  jp1: "asia",
-};
-
-const PLATFORMS = Object.keys(PLATFORM_TO_REGION) as [string, ...string[]];
 
 // Common queueId -> human label (https://static.developer.riotgames.com/docs/lol/queues.json)
 const QUEUE_NAMES: Record<number, string> = {
@@ -88,6 +72,9 @@ function parseRiotId(riotId: string): { gameName: string; tagLine: string } {
 
 async function resolvePuuid(riotId: string, region: string): Promise<string> {
   const { gameName, tagLine } = parseRiotId(riotId);
+  if (!PLATFORM_TO_REGION[region]) {
+    throw new RiotError(`Unknown region "${region}". Use one of: ${PLATFORMS.join(", ")}.`);
+  }
   const routing = `${PLATFORM_TO_REGION[region]}.api.riotgames.com`;
   const account = await riotFetch<{ puuid: string }>(
     routing,
@@ -220,6 +207,93 @@ async function fetchRankedGames(
   return games.filter((g): g is GameStat => g !== null);
 }
 
+// ---- Player comparison ----
+// We fetch this many recent ranked games per player, then pre-compute aggregate
+// stats for each window so the UI can toggle between them with no refetch.
+const COMPARE_GAME_COUNT = 25;
+const COMPARE_WINDOWS = [10, 20, 25] as const;
+
+/** Aggregate a slice of a player's games into averages + a champion pool. */
+function aggregateWindow(games: GameStat[]) {
+  const n = games.length;
+  if (n === 0) return { games: 0 };
+
+  const wins = games.filter((g) => g.win).length;
+  const totals = games.reduce(
+    (a, g) => {
+      a.kills += g.kills;
+      a.deaths += g.deaths;
+      a.assists += g.assists;
+      a.cs += g.cs;
+      a.gold += g.gold;
+      a.damage += g.damage;
+      a.minutes += g.durationMin;
+      return a;
+    },
+    { kills: 0, deaths: 0, assists: 0, cs: 0, gold: 0, damage: 0, minutes: 0 },
+  );
+
+  const byChamp = new Map<string, { games: number; wins: number }>();
+  for (const g of games) {
+    const c = byChamp.get(g.champion) ?? { games: 0, wins: 0 };
+    c.games += 1;
+    if (g.win) c.wins += 1;
+    byChamp.set(g.champion, c);
+  }
+  const topChampions = [...byChamp.entries()]
+    .map(([champion, v]) => ({
+      champion,
+      games: v.games,
+      winRate: Math.round((v.wins / v.games) * 100),
+    }))
+    .sort((a, b) => b.games - a.games)
+    .slice(0, 3);
+
+  const mins = Math.max(1, totals.minutes);
+  return {
+    games: n,
+    wins,
+    losses: n - wins,
+    winRate: Math.round((wins / n) * 100),
+    // KDA aggregated across the window (standard "(K+A)/D" definition).
+    kda: Number(((totals.kills + totals.assists) / Math.max(1, totals.deaths)).toFixed(2)),
+    kills: Number((totals.kills / n).toFixed(1)),
+    deaths: Number((totals.deaths / n).toFixed(1)),
+    assists: Number((totals.assists / n).toFixed(1)),
+    csPerMin: Number((totals.cs / mins).toFixed(1)),
+    dpm: Math.round(totals.damage / mins),
+    goldPerMin: Math.round(totals.gold / mins),
+    topChampions,
+  };
+}
+
+/** Fetch + summarize one player for the comparison card. */
+async function buildPlayerSummary(riotId: string, region: string) {
+  const puuid = await resolvePuuid(riotId, region);
+  const host = `${region}.api.riotgames.com`;
+  const routing = `${PLATFORM_TO_REGION[region]}.api.riotgames.com`;
+  const [summoner, entries, games] = await Promise.all([
+    riotFetch<SummonerDto>(host, `/lol/summoner/v4/summoners/by-puuid/${puuid}`),
+    riotFetch<LeagueEntryDto[]>(host, `/lol/league/v4/entries/by-puuid/${puuid}`),
+    fetchRankedGames(puuid, routing, COMPARE_GAME_COUNT),
+  ]);
+
+  const solo = entries.find((e) => e.queueType === "RANKED_SOLO_5x5");
+  const rank = solo ? `${solo.tier} ${solo.rank} · ${solo.leaguePoints} LP` : "Unranked";
+
+  const stats: Record<string, ReturnType<typeof aggregateWindow>> = {};
+  for (const w of COMPARE_WINDOWS) stats[String(w)] = aggregateWindow(games.slice(0, w));
+
+  return {
+    riotId,
+    region,
+    summonerLevel: summoner.summonerLevel,
+    rank,
+    totalGames: games.length,
+    stats,
+  };
+}
+
 /** Tools the agent can call for player account & match data. */
 export const riotTools = {
   lookupSummoner: tool({
@@ -269,37 +343,21 @@ export const riotTools = {
     execute: async ({ riotId, region, count }) => {
       const puuid = await resolvePuuid(riotId, region);
       const routing = `${PLATFORM_TO_REGION[region]}.api.riotgames.com`;
-      // type=ranked returns only ranked Summoner's Rift queues (Solo/Duo 420 + Flex 440).
-      const ids = await riotFetch<string[]>(
-        routing,
-        `/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=${count}&type=ranked`,
-      );
+      const games = await fetchRankedGames(puuid, routing, count);
 
-      const matches = (
-        await Promise.all(
-          ids.map(async (id) => {
-            const m = await riotFetch<MatchDto>(routing, `/lol/match/v5/matches/${id}`);
-            // Defensive: keep only Ranked Solo/Duo (420) and Flex (440).
-            if (m.info.queueId !== 420 && m.info.queueId !== 440) return null;
-            const p = m.info.participants.find((x) => x.puuid === puuid)!;
-            const cs = p.totalMinionsKilled + p.neutralMinionsKilled;
-            const mins = m.info.gameDuration / 60;
-            return {
-              matchId: id,
-              champion: p.championName,
-              role: p.teamPosition || "UNKNOWN",
-              result: p.win ? "Win" : "Loss",
-              kda: `${p.kills}/${p.deaths}/${p.assists}`,
-              kdaRatio: Number(((p.kills + p.assists) / Math.max(1, p.deaths)).toFixed(2)),
-              cs,
-              csPerMin: Number((cs / mins).toFixed(1)),
-              gold: p.goldEarned,
-              queue: QUEUE_NAMES[m.info.queueId] ?? `Queue ${m.info.queueId}`,
-              durationMin: Math.round(mins),
-            };
-          }),
-        )
-      ).filter((m): m is NonNullable<typeof m> => m !== null);
+      const matches = games.map((g) => ({
+        matchId: g.matchId,
+        champion: g.champion,
+        role: g.role,
+        result: g.win ? "Win" : "Loss",
+        kda: `${g.kills}/${g.deaths}/${g.assists}`,
+        kdaRatio: Number(((g.kills + g.assists) / Math.max(1, g.deaths)).toFixed(2)),
+        cs: g.cs,
+        csPerMin: Number((g.cs / g.durationMin).toFixed(1)),
+        gold: g.gold,
+        queue: QUEUE_NAMES[g.queueId] ?? `Queue ${g.queueId}`,
+        durationMin: Math.round(g.durationMin),
+      }));
 
       return { riotId, region, matches };
     },
@@ -329,6 +387,28 @@ export const riotTools = {
         points: e.championPoints,
       }));
       return { riotId, region, top };
+    },
+  }),
+
+  comparePlayerStats: tool({
+    description:
+      "Compare two League of Legends players side by side across their recent RANKED Summoner's Rift games (Solo/Duo + Flex). Returns each player's rank plus aggregated averages — win rate, KDA, CS/min, damage per minute (DPM), gold per minute, and most-played champions — pre-computed over their last 10, 20, and 25 games. Use this whenever the user asks to compare, contrast, or pit two players against each other. The two players may be on different regions.",
+    inputSchema: z.object({
+      playerA: z.object({
+        riotId: z.string().describe('Riot ID in "Name#TAG" format'),
+        region: regionField,
+      }),
+      playerB: z.object({
+        riotId: z.string().describe('Riot ID in "Name#TAG" format'),
+        region: regionField,
+      }),
+    }),
+    execute: async ({ playerA, playerB }) => {
+      const [a, b] = await Promise.all([
+        buildPlayerSummary(playerA.riotId, playerA.region),
+        buildPlayerSummary(playerB.riotId, playerB.region),
+      ]);
+      return { windows: COMPARE_WINDOWS.map(String), players: [a, b] };
     },
   }),
 };

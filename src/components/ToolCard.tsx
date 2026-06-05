@@ -24,6 +24,7 @@ const TOOL_META: Record<string, { icon: string; label: string }> = {
   lookupSummoner: { icon: "🔎", label: "Summoner Lookup" },
   getMatchHistory: { icon: "📜", label: "Match History" },
   getChampionMastery: { icon: "⭐", label: "Champion Mastery" },
+  comparePlayerStats: { icon: "⚔️", label: "Player Comparison" },
 };
 
 function toolKey(part: ToolPart): string {
@@ -177,6 +178,7 @@ function ToolResult({ part }: { part: ToolPart }) {
   if (key === "lookupSummoner" && out) return <SummonerResult data={out} />;
   if (key === "getMatchHistory" && out) return <MatchHistoryResult data={out} />;
   if (key === "getChampionMastery" && out) return <MasteryResult data={out} />;
+  if (key === "comparePlayerStats" && out) return <ComparisonResult data={out} />;
 
   // Generic collapsible for OP.GG / unknown tools.
   return <RawResult output={part.output} />;
@@ -346,6 +348,220 @@ function MasteryResult({ data }: { data: Record<string, unknown> }) {
           <span className="text-cream">{m.champion}</span>
           <span className="font-semibold text-gold">M{m.level}</span>
           <span className="text-parch-dim">{Math.round(m.points / 1000)}k</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---- comparePlayerStats ----
+interface ChampStat {
+  champion: string;
+  games: number;
+  winRate: number;
+}
+interface WindowStat {
+  games: number;
+  wins?: number;
+  losses?: number;
+  winRate?: number;
+  kda?: number;
+  kills?: number;
+  deaths?: number;
+  assists?: number;
+  csPerMin?: number;
+  dpm?: number;
+  goldPerMin?: number;
+  topChampions?: ChampStat[];
+}
+interface ComparePlayer {
+  riotId: string;
+  region: string;
+  summonerLevel: number;
+  rank: string;
+  totalGames: number;
+  stats: Record<string, WindowStat>;
+}
+
+const WINDOW_LABELS: Record<string, string> = {
+  "10": "Last 10",
+  "20": "Last 20",
+  "25": "Last 25",
+};
+
+function ComparisonResult({ data }: { data: Record<string, unknown> }) {
+  const version = useDDragonVersion();
+  const windows = (data.windows as string[]) ?? ["10", "20", "25"];
+  const players = (data.players as ComparePlayer[]) ?? [];
+  const [active, setActive] = useState(windows[windows.length - 1] ?? "25");
+
+  if (players.length < 2) return <RawResult output={data} />;
+  const [a, b] = players;
+  const sa = a.stats[active] ?? { games: 0 };
+  const sb = b.stats[active] ?? { games: 0 };
+
+  return (
+    <div className="border-t border-gold-deep/30 px-3 py-3 text-xs">
+      <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2">
+        <PlayerHead player={a} align="left" />
+        <span className="px-1 pt-1 text-[0.6rem] font-semibold uppercase tracking-[0.15em] text-gold/60">
+          vs
+        </span>
+        <PlayerHead player={b} align="right" />
+      </div>
+
+      <div className="my-2.5 flex justify-center gap-1">
+        {windows.map((w) => (
+          <button
+            key={w}
+            onClick={() => setActive(w)}
+            className={
+              "rounded border px-2 py-0.5 text-[0.65rem] uppercase tracking-wider transition-colors " +
+              (active === w
+                ? "border-arcane/60 bg-arcane/10 text-arcane"
+                : "border-gold-deep/30 text-parch hover:text-gold")
+            }
+          >
+            {WINDOW_LABELS[w] ?? w}
+          </button>
+        ))}
+      </div>
+
+      {sa.games === 0 && sb.games === 0 ? (
+        <p className="py-2 text-center text-parch-dim">No ranked games in this window.</p>
+      ) : (
+        <div className="space-y-0.5">
+          <StatRow
+            label="Win Rate"
+            a={sa.winRate}
+            b={sb.winRate}
+            format={(v) => `${Math.round(v)}%`}
+            subA={sa.games ? `${sa.wins}W ${sa.losses}L` : undefined}
+            subB={sb.games ? `${sb.wins}W ${sb.losses}L` : undefined}
+          />
+          <StatRow
+            label="KDA"
+            a={sa.kda}
+            b={sb.kda}
+            format={(v) => v.toFixed(2)}
+            subA={kdaLine(sa)}
+            subB={kdaLine(sb)}
+          />
+          <StatRow label="CS / min" a={sa.csPerMin} b={sb.csPerMin} format={(v) => v.toFixed(1)} />
+          <StatRow label="DPM" a={sa.dpm} b={sb.dpm} format={(v) => Math.round(v).toLocaleString()} />
+          <StatRow
+            label="Gold / min"
+            a={sa.goldPerMin}
+            b={sb.goldPerMin}
+            format={(v) => Math.round(v).toLocaleString()}
+          />
+        </div>
+      )}
+
+      {(sa.topChampions?.length || sb.topChampions?.length) ? (
+        <div className="mt-3 grid grid-cols-2 gap-2 border-t border-gold-deep/15 pt-2.5">
+          <ChampPool champs={sa.topChampions} version={version} align="left" />
+          <ChampPool champs={sb.topChampions} version={version} align="right" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function kdaLine(s: WindowStat): string | undefined {
+  if (typeof s.kills !== "number") return undefined;
+  return `${s.kills} / ${s.deaths} / ${s.assists}`;
+}
+
+function PlayerHead({ player, align }: { player: ComparePlayer; align: "left" | "right" }) {
+  return (
+    <div className={align === "right" ? "text-right" : "text-left"}>
+      <div className="break-words font-medium text-cream">{player.riotId}</div>
+      <div className="text-[0.65rem] text-gold/80">{player.rank}</div>
+      <div className="text-[0.6rem] text-parch-dim">
+        Lvl {player.summonerLevel} · {player.region} · {player.totalGames} games
+      </div>
+    </div>
+  );
+}
+
+function StatRow({
+  label,
+  a,
+  b,
+  format,
+  subA,
+  subB,
+}: {
+  label: string;
+  a?: number;
+  b?: number;
+  format: (v: number) => string;
+  subA?: string;
+  subB?: string;
+}) {
+  const hasA = typeof a === "number";
+  const hasB = typeof b === "number";
+  const aWins = hasA && hasB && (a as number) > (b as number);
+  const bWins = hasA && hasB && (b as number) > (a as number);
+  const delta = hasA && hasB ? Math.abs((a as number) - (b as number)) : 0;
+  const deltaStr = delta > 0 ? `+${format(delta)}` : "";
+
+  return (
+    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 rounded px-1.5 py-1 odd:bg-navy/25">
+      <div className="text-right leading-tight">
+        <div>
+          {aWins && deltaStr && <span className="mr-1 text-[0.6rem] text-win/70">{deltaStr}</span>}
+          <span className={"font-semibold tabular-nums " + (aWins ? "text-win" : "text-cream")}>
+            {hasA ? format(a as number) : "—"}
+          </span>
+        </div>
+        {subA && <div className="text-[0.6rem] text-parch-dim">{subA}</div>}
+      </div>
+      <div className="px-1 text-center text-[0.6rem] uppercase tracking-[0.12em] text-gold/70">
+        {label}
+      </div>
+      <div className="text-left leading-tight">
+        <div>
+          <span className={"font-semibold tabular-nums " + (bWins ? "text-win" : "text-cream")}>
+            {hasB ? format(b as number) : "—"}
+          </span>
+          {bWins && deltaStr && <span className="ml-1 text-[0.6rem] text-win/70">{deltaStr}</span>}
+        </div>
+        {subB && <div className="text-[0.6rem] text-parch-dim">{subB}</div>}
+      </div>
+    </div>
+  );
+}
+
+function ChampPool({
+  champs,
+  version,
+  align,
+}: {
+  champs?: ChampStat[];
+  version: string;
+  align: "left" | "right";
+}) {
+  if (!champs || champs.length === 0) return <div />;
+  return (
+    <div className={"flex flex-wrap gap-1.5 " + (align === "right" ? "justify-end" : "justify-start")}>
+      {champs.map((c) => (
+        <div
+          key={c.champion}
+          className="flex items-center gap-1 rounded border border-gold-deep/30 bg-navy/60 px-1.5 py-0.5"
+          title={`${c.champion} · ${c.games} games · ${c.winRate}% WR`}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={championIconUrl(c.champion, version)}
+            alt={c.champion}
+            width={16}
+            height={16}
+            className="rounded ring-1 ring-gold-deep/40"
+          />
+          <span className="text-[0.65rem] text-cream">{c.games}g</span>
+          <span className="text-[0.6rem] text-parch-dim">{c.winRate}%</span>
         </div>
       ))}
     </div>

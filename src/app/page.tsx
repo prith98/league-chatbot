@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
 import { ToolCard, type ToolPart } from "@/components/ToolCard";
 import { RiftEmblem } from "@/components/RiftEmblem";
+import { PLATFORMS } from "@/lib/regions";
 
 const SUGGESTIONS = [
   { tag: "Player", text: "Analyze Faker#KR1 on the kr region" },
@@ -13,6 +14,14 @@ const SUGGESTIONS = [
   { tag: "Build", text: "Best build and runes for Jinx this patch" },
   { tag: "Meta", text: "What are the strongest mid laners currently?" },
 ];
+
+// Riot platform codes — shared with the server-side Zod enum.
+const REGIONS = PLATFORMS;
+
+interface PlayerField {
+  riotId: string;
+  region: string;
+}
 
 function isToolPart(type: string): boolean {
   return type === "dynamic-tool" || type.startsWith("tool-");
@@ -23,6 +32,9 @@ export default function Page() {
     transport: new DefaultChatTransport({ api: "/api/chat" }),
   });
   const [input, setInput] = useState("");
+  const [showCompare, setShowCompare] = useState(false);
+  const [cmpA, setCmpA] = useState<PlayerField>({ riotId: "", region: "na1" });
+  const [cmpB, setCmpB] = useState<PlayerField>({ riotId: "", region: "na1" });
   const busy = status === "submitted" || status === "streaming";
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -34,6 +46,20 @@ export default function Page() {
     if (!text.trim() || busy) return;
     sendMessage({ text });
     setInput("");
+  }
+
+  function submitCompare() {
+    const a = cmpA.riotId.trim();
+    const b = cmpB.riotId.trim();
+    if (!a || !b || busy) return;
+    // Spell out the exact platform codes so the agent passes them straight
+    // through to comparePlayerStats' region enum (no natural-language guessing).
+    submit(
+      `Compare these two players over their last 25 ranked games using comparePlayerStats. ` +
+        `Player A: riotId "${a}", region "${cmpA.region}". ` +
+        `Player B: riotId "${b}", region "${cmpB.region}".`,
+    );
+    setShowCompare(false);
   }
 
   const empty = messages.length === 0;
@@ -192,6 +218,15 @@ export default function Page() {
         }}
         className="pb-5 pt-2"
       >
+        <div className="mb-3 flex justify-center">
+          <button
+            type="button"
+            onClick={() => setShowCompare(true)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-gold-deep/45 bg-navy/60 px-3.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-gold/80 transition-all hover:border-gold/60 hover:text-gold"
+          >
+            <span>⚔️</span> Compare two players
+          </button>
+        </div>
         <div className="hex-divider mb-4" />
         <div className="group flex items-center gap-2 rounded-lg border border-gold-deep/50 bg-navy/70 px-2 py-2 transition-all duration-300 focus-within:border-arcane/60 focus-within:shadow-[0_0_28px_-8px_rgba(10,200,185,0.45)]">
           <RiftEmblem size={22} className="ml-1.5 shrink-0 opacity-50 transition-opacity group-focus-within:opacity-90" />
@@ -223,7 +258,88 @@ export default function Page() {
           Player data · Riot API &nbsp;·&nbsp; Meta &amp; builds · OP.GG &nbsp;·&nbsp; Reasoned by Claude
         </p>
       </form>
+
+      {/* ───────── Compare modal ───────── */}
+      {showCompare && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-void/80 px-4 backdrop-blur-sm"
+          onClick={() => setShowCompare(false)}
+        >
+          <form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitCompare();
+            }}
+            className="w-full max-w-md animate-rise rounded-xl border border-gold-deep/50 bg-gradient-to-b from-panel to-navy p-5 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.8)]"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-lg">⚔️</span>
+              <h3 className="font-display text-lg text-gold-bright">Compare Players</h3>
+              <button
+                type="button"
+                onClick={() => setShowCompare(false)}
+                className="ml-auto text-parch transition-colors hover:text-gold"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="mb-4 mt-1 text-xs text-parch-dim">
+              Last 25 ranked games · Solo/Duo &amp; Flex · regions can differ
+            </p>
+
+            <PlayerInput label="Player 1" value={cmpA} onChange={setCmpA} />
+            <PlayerInput label="Player 2" value={cmpB} onChange={setCmpB} />
+
+            <button
+              type="submit"
+              disabled={!cmpA.riotId.trim() || !cmpB.riotId.trim() || busy}
+              className="mt-2 w-full rounded-md border border-gold/60 bg-gradient-to-b from-gold/25 to-gold-deep/25 py-2.5 text-xs font-semibold uppercase tracking-wider text-gold-bright transition-all hover:from-gold/40 hover:to-gold-deep/40 hover:shadow-[0_0_18px_-4px_rgba(200,170,110,0.6)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:shadow-none"
+            >
+              Compare
+            </button>
+          </form>
+        </div>
+      )}
     </main>
+  );
+}
+
+function PlayerInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: PlayerField;
+  onChange: (v: PlayerField) => void;
+}) {
+  return (
+    <div className="mb-3">
+      <label className="mb-1 block text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
+        {label}
+      </label>
+      <div className="flex gap-2">
+        <input
+          value={value.riotId}
+          onChange={(e) => onChange({ ...value, riotId: e.target.value })}
+          placeholder="Name#TAG"
+          className="min-w-0 flex-1 rounded-md border border-gold-deep/50 bg-navy/70 px-3 py-2 text-sm text-cream placeholder:text-parch-dim focus:border-arcane/60 focus:outline-none"
+        />
+        <select
+          value={value.region}
+          onChange={(e) => onChange({ ...value, region: e.target.value })}
+          className="rounded-md border border-gold-deep/50 bg-navy/70 px-2 py-2 text-sm text-cream focus:border-arcane/60 focus:outline-none"
+        >
+          {REGIONS.map((r) => (
+            <option key={r} value={r} className="bg-navy text-cream">
+              {r}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
   );
 }
 
