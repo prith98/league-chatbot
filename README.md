@@ -4,6 +4,8 @@ A conversational AI agent that analyzes League of Legends players and answers
 current-patch meta questions. Built with the **Vercel AI SDK** and **Claude
 Haiku 4.5**, deployable to Vercel and runnable locally.
 
+**🔗 Live demo: [league-chatbot.vercel.app](https://league-chatbot.vercel.app)**
+
 > Ask it: _"Analyze Faker#KR1 on kr"_, _"Who counters Darius top?"_,
 > _"Best build and runes for Jinx this patch?"_
 
