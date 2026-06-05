@@ -1,26 +1,243 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* ============================================================
+   RIFT ANALYST — Hextech design system
+   Palette + type lifted from the League of Legends client:
+   deep teal voids, hextech gold hairlines, arcane cyan glow.
+   ============================================================ */
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  /* Voids & surfaces */
+  --color-void: #010a13;
+  --color-abyss: #04111d;
+  --color-navy: #091a28;
+  --color-panel: #0a1c2b;
+  --color-teal-panel: #0a323c;
+  --color-steel: #1e2328;
+
+  /* Hextech gold */
+  --color-gold: #c8aa6e;
+  --color-gold-bright: #f0e6d2;
+  --color-gold-deep: #785a28;
+  --color-gold-dark: #463714;
+
+  /* Arcane teal */
+  --color-arcane: #0ac8b9;
+  --color-arcane-deep: #0397ab;
+
+  /* Text */
+  --color-cream: #f0e6d2;
+  --color-parch: #a09b8c;
+  --color-parch-dim: #5b5a56;
+
+  /* Outcomes */
+  --color-win: #2ad17c;
+  --color-loss: #ff4655;
+
+  --font-display: var(--font-cinzel);
+  --font-sans: var(--font-hanken);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root {
+  color-scheme: dark;
+}
+
+html {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100%;
+  font-family: var(--font-sans), system-ui, sans-serif;
+  color: var(--color-cream);
+  background-color: #010a13;
+  /* Layered atmosphere: arcane teal bloom (top), gold ember (bottom),
+     and a faint hex weave woven into the void. */
+  background-image:
+    radial-gradient(120% 80% at 50% -10%, rgba(10, 200, 185, 0.10), transparent 55%),
+    radial-gradient(90% 60% at 80% 110%, rgba(200, 170, 110, 0.08), transparent 60%),
+    radial-gradient(70% 50% at 15% 100%, rgba(3, 151, 171, 0.07), transparent 60%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100' viewBox='0 0 56 100'%3E%3Cpath d='M28 0L56 16.18V49.18L28 65.36L0 49.18V16.18ZM28 65.36L56 81.54' fill='none' stroke='%23c8aa6e' stroke-opacity='0.035' stroke-width='1'/%3E%3C/svg%3E");
+  background-attachment: fixed;
+}
+
+/* ---- Selection & scrollbar ---- */
+::selection {
+  background: rgba(10, 200, 185, 0.3);
+  color: #f0e6d2;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(#785a28, #463714);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(#c8aa6e, #785a28);
+  background-clip: padding-box;
+}
+
+/* ============================================================
+   Keyframes
+   ============================================================ */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes bloom {
+  0%, 100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+@keyframes scan {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+@keyframes hex-pulse {
+  0%, 100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes sweep {
+  from {
+    background-position: -160% 0;
+  }
+  to {
+    background-position: 260% 0;
+  }
+}
+
+/* ============================================================
+   Utilities
+   ============================================================ */
+
+/* Engraved gold wordmark */
+.wordmark {
+  font-family: var(--font-display), serif;
+  background: linear-gradient(180deg, #f4ead2 0%, #c8aa6e 45%, #a17e3e 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: 0.18em;
+}
+
+/* Hextech divider: a hairline with a centered gem node */
+.hex-divider {
+  position: relative;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(200, 170, 110, 0.5) 18%,
+    rgba(200, 170, 110, 0.5) 82%,
+    transparent
+  );
+}
+.hex-divider::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  translate: -50% -50%;
+  rotate: 45deg;
+  background: #c8aa6e;
+  box-shadow: 0 0 8px rgba(200, 170, 110, 0.8);
+}
+
+/* Corner-bracketed hextech panel */
+.hex-frame {
+  position: relative;
+  background:
+    linear-gradient(160deg, rgba(10, 50, 60, 0.35), rgba(9, 26, 40, 0.55));
+  border: 1px solid rgba(120, 90, 40, 0.45);
+}
+.hex-frame::before,
+.hex-frame::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--color-gold);
+  opacity: 0.85;
+  transition: opacity 0.25s ease;
+}
+.hex-frame::before {
+  top: -1px;
+  left: -1px;
+  border-right: none;
+  border-bottom: none;
+}
+.hex-frame::after {
+  bottom: -1px;
+  right: -1px;
+  border-left: none;
+  border-top: none;
+}
+
+.animate-rise {
+  animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.animate-bloom {
+  animation: bloom 3.5s ease-in-out infinite;
+}
+.animate-spin-slow {
+  animation: spin-slow 24s linear infinite;
+}
+
+/* Shimmering "analyzing" scan bar */
+.scan-bar {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.scan-bar::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 35%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(10, 200, 185, 0.18),
+    transparent
+  );
+  animation: scan 1.6s ease-in-out infinite;
 }

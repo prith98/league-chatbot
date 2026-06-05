@@ -21,9 +21,9 @@ export interface ToolPart {
 }
 
 const TOOL_META: Record<string, { icon: string; label: string }> = {
-  lookupSummoner: { icon: "🔎", label: "Summoner lookup" },
-  getMatchHistory: { icon: "📜", label: "Match history" },
-  getChampionMastery: { icon: "⭐", label: "Champion mastery" },
+  lookupSummoner: { icon: "🔎", label: "Summoner Lookup" },
+  getMatchHistory: { icon: "📜", label: "Match History" },
+  getChampionMastery: { icon: "⭐", label: "Champion Mastery" },
 };
 
 function toolKey(part: ToolPart): string {
@@ -39,7 +39,7 @@ function meta(part: ToolPart) {
   return TOOL_META[key] ?? { icon: "⚙️", label: key };
 }
 
-/** Pretty card for a single tool call: shows progress, then structured results. */
+/** Hextech console for a single tool call: a scanning state, then structured intel. */
 export function ToolCard({ part }: { part: ToolPart }) {
   const { icon, label } = meta(part);
   const done = part.state === "output-available";
@@ -47,18 +47,33 @@ export function ToolCard({ part }: { part: ToolPart }) {
   const running = !done && !errored;
 
   return (
-    <div className="my-2 overflow-hidden rounded-lg border border-slate-700/70 bg-slate-900/60">
-      <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
-        <span>{icon}</span>
-        <span className="font-medium text-slate-300">{label}</span>
-        {running && <span className="ml-auto animate-pulse text-amber-300">running…</span>}
-        {done && <span className="ml-auto text-emerald-400">✓</span>}
-        {errored && <span className="ml-auto text-red-400">failed</span>}
+    <div className="relative my-2.5 overflow-hidden rounded-md border border-gold-deep/40 bg-abyss/70">
+      {/* top hairline accent */}
+      <div className="h-px w-full bg-gradient-to-r from-transparent via-gold/50 to-transparent" />
+      {running && <div className="scan-bar" />}
+
+      <div className="relative flex items-center gap-2 px-3 py-2 text-xs">
+        <span className="text-sm">{icon}</span>
+        <span className="font-semibold uppercase tracking-[0.12em] text-gold/90">
+          {label}
+        </span>
+        {running && (
+          <span className="ml-auto flex items-center gap-1.5 text-[0.65rem] uppercase tracking-wider text-arcane">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-arcane" />
+            Analyzing
+          </span>
+        )}
+        {done && <span className="ml-auto text-sm text-win">✓</span>}
+        {errored && (
+          <span className="ml-auto text-[0.65rem] uppercase tracking-wider text-loss">
+            Failed
+          </span>
+        )}
       </div>
 
       {done && <ToolResult part={part} />}
       {errored && (
-        <div className="border-t border-slate-700/60 px-3 py-2 text-xs text-red-300">
+        <div className="border-t border-gold-deep/30 px-3 py-2 text-xs text-loss/90">
           {part.errorText}
         </div>
       )}
@@ -90,25 +105,28 @@ interface RankedRow {
 function SummonerResult({ data }: { data: Record<string, unknown> }) {
   const ranked = data.ranked;
   return (
-    <div className="border-t border-slate-700/60 px-3 py-2 text-xs">
-      <div className="mb-1 text-slate-400">
-        {String(data.riotId)} · Lvl {String(data.summonerLevel)} · {String(data.region)}
+    <div className="border-t border-gold-deep/30 px-3 py-2.5 text-xs">
+      <div className="mb-1.5 font-medium text-cream">
+        {String(data.riotId)}{" "}
+        <span className="text-parch-dim">
+          · Lvl {String(data.summonerLevel)} · {String(data.region)}
+        </span>
       </div>
       {Array.isArray(ranked) ? (
         <div className="space-y-1">
           {(ranked as RankedRow[]).map((r) => (
             <div key={r.queue} className="flex items-center gap-2">
-              <span className="w-16 text-slate-400">{r.queue}</span>
-              <span className="font-semibold text-amber-200">{r.rank}</span>
-              <span className="text-slate-400">{r.leaguePoints} LP</span>
-              <span className="ml-auto text-slate-300">
-                {r.wins}W {r.losses}L · {r.winRate}
+              <span className="w-16 text-parch-dim">{r.queue}</span>
+              <span className="font-semibold text-gold">{r.rank}</span>
+              <span className="text-parch">{r.leaguePoints} LP</span>
+              <span className="ml-auto text-parch">
+                {r.wins}W {r.losses}L · <span className="text-cream">{r.winRate}</span>
               </span>
             </div>
           ))}
         </div>
       ) : (
-        <span className="text-slate-400">Unranked</span>
+        <span className="text-parch-dim">Unranked</span>
       )}
     </div>
   );
@@ -131,36 +149,46 @@ function MatchHistoryResult({ data }: { data: Record<string, unknown> }) {
   const version = useDDragonVersion();
   const matches = (data.matches as MatchRow[]) ?? [];
   return (
-    <div className="border-t border-slate-700/60 px-2 py-1.5">
+    <div className="border-t border-gold-deep/30 px-2 py-1.5">
       <table className="w-full text-xs">
         <tbody>
-          {matches.map((m) => (
-            <tr key={m.matchId} className="border-t border-slate-800 first:border-t-0">
-              <td className="py-1 pr-1">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={championIconUrl(m.champion, version)}
-                  alt={m.champion}
-                  width={22}
-                  height={22}
-                  className="rounded"
-                />
-              </td>
-              <td className="pr-2">
-                <span
-                  className={
-                    m.result === "Win" ? "font-semibold text-emerald-400" : "font-semibold text-red-400"
-                  }
-                >
-                  {m.result === "Win" ? "W" : "L"}
-                </span>
-              </td>
-              <td className="pr-2 text-slate-300">{m.champion}</td>
-              <td className="pr-2 text-slate-400">{m.kda}</td>
-              <td className="pr-2 text-slate-400">{m.csPerMin}/min</td>
-              <td className="text-right text-slate-500">{m.queue}</td>
-            </tr>
-          ))}
+          {matches.map((m) => {
+            const win = m.result === "Win";
+            return (
+              <tr
+                key={m.matchId}
+                className="border-t border-gold-deep/15 first:border-t-0"
+              >
+                <td className="py-1.5 pl-1 pr-2">
+                  <span
+                    className={
+                      "inline-block h-7 w-1 rounded-full " +
+                      (win ? "bg-win" : "bg-loss")
+                    }
+                  />
+                </td>
+                <td className="py-1 pr-2">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={championIconUrl(m.champion, version)}
+                    alt={m.champion}
+                    width={24}
+                    height={24}
+                    className="rounded ring-1 ring-gold-deep/40"
+                  />
+                </td>
+                <td className="pr-2 text-cream">{m.champion}</td>
+                <td className="pr-3">
+                  <span className={win ? "font-semibold text-win" : "font-semibold text-loss"}>
+                    {win ? "Victory" : "Defeat"}
+                  </span>
+                </td>
+                <td className="pr-3 text-parch">{m.kda}</td>
+                <td className="pr-2 text-parch-dim">{m.csPerMin}/min</td>
+                <td className="text-right text-parch-dim">{m.queue}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -177,14 +205,23 @@ function MasteryResult({ data }: { data: Record<string, unknown> }) {
   const version = useDDragonVersion();
   const top = (data.top as MasteryRow[]) ?? [];
   return (
-    <div className="flex flex-wrap gap-2 border-t border-slate-700/60 px-3 py-2">
+    <div className="flex flex-wrap gap-2 border-t border-gold-deep/30 px-3 py-2.5">
       {top.map((m) => (
-        <div key={m.champion} className="flex items-center gap-1.5 rounded bg-slate-800 px-2 py-1 text-xs">
+        <div
+          key={m.champion}
+          className="flex items-center gap-1.5 rounded border border-gold-deep/30 bg-navy/60 px-2 py-1 text-xs"
+        >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={championIconUrl(m.champion, version)} alt={m.champion} width={20} height={20} className="rounded" />
-          <span className="text-slate-300">{m.champion}</span>
-          <span className="text-amber-300">M{m.level}</span>
-          <span className="text-slate-500">{Math.round(m.points / 1000)}k</span>
+          <img
+            src={championIconUrl(m.champion, version)}
+            alt={m.champion}
+            width={20}
+            height={20}
+            className="rounded ring-1 ring-gold-deep/40"
+          />
+          <span className="text-cream">{m.champion}</span>
+          <span className="font-semibold text-gold">M{m.level}</span>
+          <span className="text-parch-dim">{Math.round(m.points / 1000)}k</span>
         </div>
       ))}
     </div>
@@ -198,11 +235,14 @@ function RawResult({ output }: { output: unknown }) {
   const text = typeof output === "string" ? output : JSON.stringify(output, null, 2);
   const preview = text.length > 160 ? text.slice(0, 160) + "…" : text;
   return (
-    <div className="border-t border-slate-700/60 px-3 py-2 text-xs">
-      <button onClick={() => setOpen((o) => !o)} className="text-slate-400 hover:text-slate-200">
+    <div className="border-t border-gold-deep/30 px-3 py-2 text-xs">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="text-parch transition-colors hover:text-gold"
+      >
         {open ? "▾ hide data" : "▸ show data"}
       </button>
-      <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[0.7rem] text-slate-400">
+      <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[0.7rem] text-parch">
         {open ? text : preview}
       </pre>
     </div>

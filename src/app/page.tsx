@@ -5,12 +5,13 @@ import { DefaultChatTransport } from "ai";
 import { useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
 import { ToolCard, type ToolPart } from "@/components/ToolCard";
+import { RiftEmblem } from "@/components/RiftEmblem";
 
 const SUGGESTIONS = [
-  "Analyze Faker#KR1 on the kr region",
-  "Who counters Darius top right now?",
-  "Best build and runes for Jinx this patch",
-  "What are the strongest mid laners currently?",
+  { tag: "Player", text: "Analyze Faker#KR1 on the kr region" },
+  { tag: "Matchup", text: "Who counters Darius top right now?" },
+  { tag: "Build", text: "Best build and runes for Jinx this patch" },
+  { tag: "Meta", text: "What are the strongest mid laners currently?" },
 ];
 
 function isToolPart(type: string): boolean {
@@ -35,27 +36,88 @@ export default function Page() {
     setInput("");
   }
 
+  const empty = messages.length === 0;
+
   return (
-    <main className="mx-auto flex h-dvh w-full max-w-3xl flex-col px-3 sm:px-4">
-      <header className="border-b border-slate-800 py-3 sm:py-4">
-        <h1 className="text-lg font-bold text-slate-100 sm:text-xl">🛡️ Rift Analyst</h1>
-        <p className="text-xs text-slate-400 sm:text-sm">
-          Player analysis (Riot API) + champion meta &amp; builds (OP.GG) · Claude Haiku 4.5
-        </p>
+    <main className="relative mx-auto flex h-dvh w-full max-w-3xl flex-col px-4 sm:px-6">
+      {/* arcane watermark — depth behind the conversation */}
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-0 -z-10 flex items-center justify-center overflow-hidden"
+      >
+        <RiftEmblem size={640} className="animate-spin-slow opacity-[0.04]" />
+      </div>
+
+      {/* ───────── Header ───────── */}
+      <header className="pt-6 pb-4">
+        <div className="flex items-center gap-3.5">
+          <div className="relative shrink-0">
+            <div className="absolute inset-0 animate-bloom rounded-full bg-arcane/20 blur-md" />
+            <RiftEmblem size={46} className="relative" />
+          </div>
+          <div className="min-w-0">
+            <h1 className="wordmark text-xl font-semibold leading-none sm:text-2xl">
+              RIFT ANALYST
+            </h1>
+            <p className="mt-1.5 text-[0.7rem] uppercase tracking-[0.22em] text-parch-dim sm:text-xs">
+              Summoner&apos;s Rift Intelligence
+            </p>
+          </div>
+          <div className="ml-auto hidden items-center gap-2 rounded-full border border-gold-deep/40 bg-navy/60 px-3 py-1.5 text-[0.65rem] uppercase tracking-wider text-parch sm:flex">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-arcane opacity-75" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-arcane" />
+            </span>
+            Haiku&nbsp;4.5
+          </div>
+        </div>
+        <div className="hex-divider mt-4" />
       </header>
 
-      <div className="flex-1 space-y-4 overflow-y-auto py-5">
-        {messages.length === 0 && (
-          <div className="space-y-3">
-            <p className="text-sm text-slate-400">Try asking:</p>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {SUGGESTIONS.map((s) => (
+      {/* ───────── Conversation ───────── */}
+      <div
+        className={
+          "flex-1 overflow-y-auto pb-6 pt-1 " +
+          (empty ? "flex flex-col justify-center" : "space-y-5")
+        }
+      >
+        {empty && (
+          <div className="animate-rise pb-8">
+            <div className="mb-7 text-center">
+              <p className="text-[0.7rem] uppercase tracking-[0.3em] text-gold/80">
+                Channel the data
+              </p>
+              <h2 className="mt-2 font-display text-2xl font-semibold text-cream sm:text-[1.7rem]">
+                Scout any player, matchup, or meta
+              </h2>
+              <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-parch">
+                Live player records from the Riot API, fused with champion meta
+                &amp; builds from OP.GG — read on the current patch.
+              </p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {SUGGESTIONS.map((s, i) => (
                 <button
-                  key={s}
-                  onClick={() => submit(s)}
-                  className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-left text-sm text-slate-300 transition hover:border-slate-600 hover:bg-slate-800"
+                  key={s.text}
+                  onClick={() => submit(s.text)}
+                  style={{ animationDelay: `${120 + i * 80}ms` }}
+                  className="group relative animate-rise overflow-hidden rounded-lg border border-gold-deep/45 bg-gradient-to-b from-panel/80 to-navy/90 p-4 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-gold/60 hover:shadow-[0_8px_30px_-12px_rgba(10,200,185,0.45)]"
                 >
-                  {s}
+                  {/* hover sheen — arcane bloom from the corner */}
+                  <span className="pointer-events-none absolute inset-0 bg-[radial-gradient(130%_120%_at_0%_0%,rgba(10,200,185,0.14),transparent_55%)] opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
+                  {/* left rune accent */}
+                  <span className="absolute left-0 top-1/2 h-0 w-[2px] -translate-y-1/2 bg-gradient-to-b from-gold to-gold-deep transition-all duration-300 group-hover:h-3/4" />
+
+                  <span className="relative inline-flex items-center rounded-full border border-gold-deep/50 bg-void/50 px-2.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.18em] text-gold/80 transition-colors group-hover:text-gold">
+                    {s.tag}
+                  </span>
+                  <span className="relative mt-2.5 flex items-start gap-2 text-sm leading-snug text-cream/90">
+                    <span className="flex-1">{s.text}</span>
+                    <span className="mt-0.5 shrink-0 text-gold/40 transition-all duration-300 group-hover:translate-x-0.5 group-hover:text-gold">
+                      →
+                    </span>
+                  </span>
                 </button>
               ))}
             </div>
@@ -63,11 +125,21 @@ export default function Page() {
         )}
 
         {messages.map((m) => (
-          <div key={m.id} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
+          <div
+            key={m.id}
+            className={
+              "animate-rise " +
+              (m.role === "user" ? "flex justify-end" : "flex justify-start gap-3")
+            }
+          >
+            {m.role === "assistant" && (
+              <RiftEmblem size={26} className="mt-1 shrink-0 opacity-80" />
+            )}
             <div
               className={
-                "max-w-[88%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed " +
-                (m.role === "user" ? "bg-blue-600 text-white" : "w-full bg-slate-800/80 text-slate-100")
+                m.role === "user"
+                  ? "max-w-[85%] rounded-xl rounded-tr-sm border border-gold-deep/50 bg-gradient-to-br from-gold-deep/20 to-navy/60 px-4 py-2.5 text-sm leading-relaxed text-cream"
+                  : "min-w-0 flex-1 rounded-xl rounded-tl-sm border border-arcane/15 bg-panel/70 px-4 py-3 text-sm leading-relaxed text-cream shadow-[inset_0_1px_0_rgba(240,230,210,0.04)]"
               }
             >
               {m.parts.map((part, i) => {
@@ -89,35 +161,50 @@ export default function Page() {
           </div>
         ))}
 
-        {status === "submitted" && <div className="text-sm text-slate-500">Thinking…</div>}
+        {status === "submitted" && (
+          <div className="flex items-center gap-3">
+            <RiftEmblem size={26} className="shrink-0 opacity-80" />
+            <div className="flex items-center gap-1.5 text-xs uppercase tracking-[0.2em] text-parch">
+              <span className="h-1.5 w-1.5 rounded-full bg-arcane" style={{ animation: "hex-pulse 1.2s ease-in-out infinite" }} />
+              <span className="h-1.5 w-1.5 rounded-full bg-arcane" style={{ animation: "hex-pulse 1.2s ease-in-out 0.2s infinite" }} />
+              <span className="h-1.5 w-1.5 rounded-full bg-arcane" style={{ animation: "hex-pulse 1.2s ease-in-out 0.4s infinite" }} />
+              <span className="ml-2 text-parch-dim">consulting the rift</span>
+            </div>
+          </div>
+        )}
+
         {error && (
-          <div className="rounded-lg border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">
-            Something went wrong. Check that <code>RIOT_API_KEY</code> and{" "}
-            <code>ANTHROPIC_API_KEY</code> are set in <code>.env.local</code>.
+          <div className="rounded-md border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-loss/90">
+            The connection to the rift faltered. Ensure <code className="font-mono text-loss">RIOT_API_KEY</code> and{" "}
+            <code className="font-mono text-loss">ANTHROPIC_API_KEY</code> are set in{" "}
+            <code className="font-mono text-loss">.env.local</code>.
           </div>
         )}
         <div ref={bottomRef} />
       </div>
 
+      {/* ───────── Console ───────── */}
       <form
         onSubmit={(e) => {
           e.preventDefault();
           submit(input);
         }}
-        className="border-t border-slate-800 py-3 sm:py-4"
+        className="pb-5 pt-2"
       >
-        <div className="flex gap-2">
+        <div className="hex-divider mb-4" />
+        <div className="group flex items-center gap-2 rounded-lg border border-gold-deep/50 bg-navy/70 px-2 py-2 transition-all duration-300 focus-within:border-arcane/60 focus-within:shadow-[0_0_28px_-8px_rgba(10,200,185,0.45)]">
+          <RiftEmblem size={22} className="ml-1.5 shrink-0 opacity-50 transition-opacity group-focus-within:opacity-90" />
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask about a player or the current meta…"
-            className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+            className="flex-1 bg-transparent px-1 py-1.5 text-sm text-cream placeholder:text-parch-dim focus:outline-none"
           />
           {busy ? (
             <button
               type="button"
               onClick={stop}
-              className="rounded-lg bg-slate-700 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-600"
+              className="rounded-md border border-loss/40 bg-loss/10 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-loss transition hover:bg-loss/20"
             >
               Stop
             </button>
@@ -125,12 +212,15 @@ export default function Page() {
             <button
               type="submit"
               disabled={!input.trim()}
-              className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-500 disabled:opacity-40"
+              className="rounded-md border border-gold/60 bg-gradient-to-b from-gold/25 to-gold-deep/25 px-5 py-2 text-xs font-semibold uppercase tracking-wider text-gold-bright transition-all hover:from-gold/40 hover:to-gold-deep/40 hover:shadow-[0_0_18px_-4px_rgba(200,170,110,0.6)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:shadow-none"
             >
               Send
             </button>
           )}
         </div>
+        <p className="mt-2.5 text-center text-[0.65rem] text-parch-dim">
+          Player data · Riot API &nbsp;·&nbsp; Meta &amp; builds · OP.GG &nbsp;·&nbsp; Reasoned by Claude
+        </p>
       </form>
     </main>
   );
