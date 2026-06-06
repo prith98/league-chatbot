@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { PLATFORM_TO_REGION, PLATFORMS } from "@/lib/regions";
+import { pctVsRoleAvg } from "@/lib/roleBaselines";
 
 /**
  * Riot Games API client + agent tools.
@@ -339,6 +340,25 @@ function aggregateWindow(games: GameStat[]) {
   );
 
   const mins = Math.max(1, totals.minutes);
+  const csPerMin = Number((totals.cs / mins).toFixed(1));
+  const dpm = Math.round(totals.damage / mins);
+  const goldPerMin = Math.round(totals.gold / mins);
+  // Team-relative impact (window means of per-game ratios), as percentages.
+  const kp = Math.round((totals.kp / n) * 100);
+  const damageShare = Math.round((totals.damageShare / n) * 100);
+  const deathShare = Math.round((totals.deathShare / n) * 100);
+
+  // Role-relative deviations so the model's prose matches the card's fair view:
+  // role-dependent stats are only meaningful against the player's role average.
+  const vsRoleAvg = {
+    kp: pctVsRoleAvg(primaryRole, "kp", kp),
+    damageShare: pctVsRoleAvg(primaryRole, "damageShare", damageShare),
+    csPerMin: pctVsRoleAvg(primaryRole, "csPerMin", csPerMin),
+    dpm: pctVsRoleAvg(primaryRole, "dpm", dpm),
+    goldPerMin: pctVsRoleAvg(primaryRole, "goldPerMin", goldPerMin),
+    deathShare: pctVsRoleAvg(primaryRole, "deathShare", deathShare),
+  };
+
   return {
     games: n,
     wins,
@@ -352,13 +372,13 @@ function aggregateWindow(games: GameStat[]) {
     kills: Number((totals.kills / n).toFixed(1)),
     deaths: Number((totals.deaths / n).toFixed(1)),
     assists: Number((totals.assists / n).toFixed(1)),
-    csPerMin: Number((totals.cs / mins).toFixed(1)),
-    dpm: Math.round(totals.damage / mins),
-    goldPerMin: Math.round(totals.gold / mins),
-    // Team-relative impact (window means of per-game ratios), as percentages.
-    kp: Math.round((totals.kp / n) * 100),
-    damageShare: Math.round((totals.damageShare / n) * 100),
-    deathShare: Math.round((totals.deathShare / n) * 100),
+    csPerMin,
+    dpm,
+    goldPerMin,
+    kp,
+    damageShare,
+    deathShare,
+    vsRoleAvg,
     form: computeForm(games),
     topChampions,
   };

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { championIconUrl, useDDragonVersion } from "@/lib/ddragon";
 import { StatRadar } from "@/components/StatRadar";
+import { roleIndex, pctVsRoleAvg, type MetricKey } from "@/lib/roleBaselines";
 
 type ToolState =
   | "input-streaming"
@@ -480,6 +481,11 @@ function ComparisonResult({ data }: { data: Record<string, unknown> }) {
     sa.primaryRole !== "UNKNOWN";
   const wrMeaningful = winRateMeaningful(sa, sb);
 
+  // Role-relative helpers: colour role-dependent rows by each player's index vs
+  // their own role average (fair across roles), and annotate with the deviation.
+  const idx = (s: WindowStat, k: MetricKey) => roleIndex(s.primaryRole, k, s[k]);
+  const vsAvg = (s: WindowStat, k: MetricKey) => pctVsRoleAvg(s.primaryRole, k, s[k]);
+
   return (
     <div className="border-t border-gold-deep/30 px-3 py-3 text-xs">
       <div className="mb-2 flex justify-center">
@@ -535,47 +541,64 @@ function ComparisonResult({ data }: { data: Record<string, unknown> }) {
             a={sa.kp}
             b={sb.kp}
             format={(v) => `${Math.round(v)}%`}
+            aCompare={idx(sa, "kp")}
+            bCompare={idx(sb, "kp")}
+            subA={vsAvg(sa, "kp")}
+            subB={vsAvg(sb, "kp")}
           />
           <StatRow
             label="Dmg Share"
             a={sa.damageShare}
             b={sb.damageShare}
             format={(v) => `${Math.round(v)}%`}
-            comparable={sameRole}
+            aCompare={idx(sa, "damageShare")}
+            bCompare={idx(sb, "damageShare")}
+            subA={vsAvg(sa, "damageShare")}
+            subB={vsAvg(sb, "damageShare")}
           />
           <StatRow
             label="Death Share"
             a={sa.deathShare}
             b={sb.deathShare}
             format={(v) => `${Math.round(v)}%`}
-            lowerIsBetter
+            aCompare={idx(sa, "deathShare")}
+            bCompare={idx(sb, "deathShare")}
+            subA={vsAvg(sa, "deathShare")}
+            subB={vsAvg(sb, "deathShare")}
           />
           <StatRow
             label="CS / min"
             a={sa.csPerMin}
             b={sb.csPerMin}
             format={(v) => v.toFixed(1)}
-            comparable={sameRole}
+            aCompare={idx(sa, "csPerMin")}
+            bCompare={idx(sb, "csPerMin")}
+            subA={vsAvg(sa, "csPerMin")}
+            subB={vsAvg(sb, "csPerMin")}
           />
           <StatRow
             label="DPM"
             a={sa.dpm}
             b={sb.dpm}
             format={(v) => Math.round(v).toLocaleString()}
-            comparable={sameRole}
+            aCompare={idx(sa, "dpm")}
+            bCompare={idx(sb, "dpm")}
+            subA={vsAvg(sa, "dpm")}
+            subB={vsAvg(sb, "dpm")}
           />
           <StatRow
             label="Gold / min"
             a={sa.goldPerMin}
             b={sb.goldPerMin}
             format={(v) => Math.round(v).toLocaleString()}
-            comparable={sameRole}
+            aCompare={idx(sa, "goldPerMin")}
+            bCompare={idx(sb, "goldPerMin")}
+            subA={vsAvg(sa, "goldPerMin")}
+            subB={vsAvg(sb, "goldPerMin")}
           />
-          {!sameRole && (
-            <p className="pt-1 text-center text-[0.55rem] leading-snug text-parch-dim">
-              Different roles — CS, damage, and gold aren&apos;t directly comparable.
-            </p>
-          )}
+          <p className="pt-1 text-center text-[0.55rem] leading-snug text-parch-dim">
+            Role-dependent stats compared as % vs each player&apos;s role average.
+          </p>
         </div>
       )}
 
@@ -583,8 +606,18 @@ function ComparisonResult({ data }: { data: Record<string, unknown> }) {
         <div className="mt-3 border-t border-gold-deep/15 pt-3">
           <StatRadar
             series={[
-              { label: gameName(a.riotId), colorClass: "text-arcane", metrics: radarMetrics(sa) },
-              { label: gameName(b.riotId), colorClass: "text-gold", metrics: radarMetrics(sb) },
+              {
+                label: gameName(a.riotId),
+                colorClass: "text-arcane",
+                role: sa.primaryRole ?? "UNKNOWN",
+                metrics: radarMetrics(sa),
+              },
+              {
+                label: gameName(b.riotId),
+                colorClass: "text-gold",
+                role: sb.primaryRole ?? "UNKNOWN",
+                metrics: radarMetrics(sb),
+              },
             ]}
           />
         </div>
@@ -684,7 +717,12 @@ function PlayerStatsResult({ data }: { data: Record<string, unknown> }) {
         <>
           <StatRadar
             series={[
-              { label: gameName(player.riotId), colorClass: "text-arcane", metrics: radarMetrics(s) },
+              {
+                label: gameName(player.riotId),
+                colorClass: "text-arcane",
+                role: s.primaryRole ?? "UNKNOWN",
+                metrics: radarMetrics(s),
+              },
             ]}
           />
           <div className="mt-3 border-t border-gold-deep/15 pt-3">
@@ -710,15 +748,36 @@ function StatGrid({ s }: { s: WindowStat }) {
       sub: typeof s.wins === "number" ? `${s.wins}W ${s.losses}L${formGlyph(s)}` : undefined,
     },
     { label: "KDA", value: typeof s.kda === "number" ? s.kda.toFixed(2) : "—", sub: kdaLine(s) },
-    { label: "Kill Part.", value: typeof s.kp === "number" ? `${s.kp}%` : "—" },
-    { label: "Dmg Share", value: typeof s.damageShare === "number" ? `${s.damageShare}%` : "—" },
-    { label: "CS / min", value: typeof s.csPerMin === "number" ? s.csPerMin.toFixed(1) : "—" },
-    { label: "DPM", value: typeof s.dpm === "number" ? Math.round(s.dpm).toLocaleString() : "—" },
+    {
+      label: "Kill Part.",
+      value: typeof s.kp === "number" ? `${s.kp}%` : "—",
+      sub: pctVsRoleAvg(s.primaryRole, "kp", s.kp),
+    },
+    {
+      label: "Dmg Share",
+      value: typeof s.damageShare === "number" ? `${s.damageShare}%` : "—",
+      sub: pctVsRoleAvg(s.primaryRole, "damageShare", s.damageShare),
+    },
+    {
+      label: "CS / min",
+      value: typeof s.csPerMin === "number" ? s.csPerMin.toFixed(1) : "—",
+      sub: pctVsRoleAvg(s.primaryRole, "csPerMin", s.csPerMin),
+    },
+    {
+      label: "DPM",
+      value: typeof s.dpm === "number" ? Math.round(s.dpm).toLocaleString() : "—",
+      sub: pctVsRoleAvg(s.primaryRole, "dpm", s.dpm),
+    },
     {
       label: "Gold / min",
       value: typeof s.goldPerMin === "number" ? Math.round(s.goldPerMin).toLocaleString() : "—",
+      sub: pctVsRoleAvg(s.primaryRole, "goldPerMin", s.goldPerMin),
     },
-    { label: "Death Share", value: typeof s.deathShare === "number" ? `${s.deathShare}%` : "—" },
+    {
+      label: "Death Share",
+      value: typeof s.deathShare === "number" ? `${s.deathShare}%` : "—",
+      sub: pctVsRoleAvg(s.primaryRole, "deathShare", s.deathShare),
+    },
   ];
   return (
     <div className="grid grid-cols-2 gap-1.5">
@@ -772,7 +831,8 @@ function StatRow({
   subA,
   subB,
   comparable = true,
-  lowerIsBetter = false,
+  aCompare,
+  bCompare,
 }: {
   label: string;
   a?: number;
@@ -780,21 +840,26 @@ function StatRow({
   format: (v: number) => string;
   subA?: string;
   subB?: string;
-  // When false, neither side is crowned (e.g. cross-role stats, or a win-rate
-  // gap within sampling noise) — values render neutral with no delta.
+  // When false, neither side is crowned (e.g. a win-rate gap within sampling
+  // noise) — values render neutral with no delta.
   comparable?: boolean;
-  // Invert the comparison so the lower value wins (e.g. Death Share).
-  lowerIsBetter?: boolean;
+  // When provided, colour the winner by THESE values instead of the displayed
+  // ones (e.g. role-relative indices, higher = better) — keeps the raw numbers
+  // on screen while comparing them fairly. Suppresses the "+delta".
+  aCompare?: number;
+  bCompare?: number;
 }) {
   const hasA = typeof a === "number";
   const hasB = typeof b === "number";
-  const both = hasA && hasB && comparable;
-  const aWins = both && (lowerIsBetter ? (a as number) < (b as number) : (a as number) > (b as number));
-  const bWins = both && (lowerIsBetter ? (b as number) < (a as number) : (b as number) > (a as number));
-  const delta = both ? Math.abs((a as number) - (b as number)) : 0;
-  // Skip the "+delta" on lower-is-better stats — a "+" beside the lower
-  // (better) value reads backwards. The colour already marks the winner.
-  const deltaStr = delta > 0 && !lowerIsBetter ? `+${format(delta)}` : "";
+  const cmpA = aCompare ?? a;
+  const cmpB = bCompare ?? b;
+  const indexed = aCompare !== undefined || bCompare !== undefined;
+  const both = typeof cmpA === "number" && typeof cmpB === "number" && comparable;
+  const aWins = both && cmpA > cmpB;
+  const bWins = both && cmpB > cmpA;
+  // Only the raw rows (no explicit compare values) show a numeric "+delta".
+  const delta = both && !indexed ? Math.abs((a as number) - (b as number)) : 0;
+  const deltaStr = delta > 0 ? `+${format(delta)}` : "";
 
   return (
     <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 rounded px-1.5 py-1 odd:bg-navy/25">

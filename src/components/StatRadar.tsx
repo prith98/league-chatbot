@@ -1,41 +1,45 @@
 "use client";
 
+import { roleIndex, type MetricKey } from "@/lib/roleBaselines";
+
 /**
  * Hextech-styled radar/spider chart, hand-rolled in SVG so it inherits the
  * theme palette via `currentColor` (no charting dependency).
  *
- * Each axis normalizes a metric to [0,1] against a fixed soft cap, so a single
- * player's radar and a two-player overlay share one honest scale. Caps are
- * deliberately generous, role-agnostic reference points — tune them here.
+ * Axes are ROLE-RELATIVE: each metric is divided by that player's role average
+ * (see roleBaselines), so a support and an ADC are judged against their own
+ * role's bar rather than each other's raw numbers. The 1.0× ring (role average)
+ * sits at the chart's midpoint; the outer ring is 2× role average.
  */
 
 export interface RadarAxis {
-  key: string;
+  key: MetricKey;
   label: string;
-  max: number; // value that fills the axis to the outer ring
-  invert?: boolean; // lower-is-better metric (e.g. death share → survivability)
 }
 
-// The six "impact" axes. Keys match the fields on a comparison WindowStat.
+// The six "impact" axes. Keys match roleBaselines metric keys + WindowStat.
 export const RADAR_AXES: RadarAxis[] = [
-  { key: "kda", label: "KDA", max: 5 },
-  { key: "kp", label: "Kill Part.", max: 80 },
-  { key: "damageShare", label: "Dmg Share", max: 35 },
-  { key: "csPerMin", label: "CS/min", max: 9 },
-  { key: "dpm", label: "DPM", max: 1100 },
-  { key: "deathShare", label: "Survival", max: 40, invert: true },
+  { key: "kda", label: "KDA" },
+  { key: "kp", label: "Kill Part." },
+  { key: "damageShare", label: "Dmg Share" },
+  { key: "csPerMin", label: "CS/min" },
+  { key: "dpm", label: "DPM" },
+  { key: "deathShare", label: "Survival" },
 ];
 
 export interface RadarSeries {
   label: string;
   colorClass: string; // Tailwind text-* class; drives fill + stroke via currentColor
+  role: string; // player's primary role for the active window — sets the baseline
   metrics: Record<string, number | undefined>;
 }
 
 const SIZE = 240;
 const CENTER = SIZE / 2;
 const RADIUS = CENTER - 34; // headroom for axis labels
+// Ring fractions of the radius. 0.5 maps to 1.0× role average (the reference).
 const RINGS = [0.25, 0.5, 0.75, 1];
+const AVG_RING = 0.5;
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
@@ -48,9 +52,10 @@ function coord(i: number, n: number, r: number): [number, number] {
   return [CENTER + Math.cos(a) * r, CENTER + Math.sin(a) * r];
 }
 
-function norm(axis: RadarAxis, raw: number | undefined): number {
-  if (typeof raw !== "number") return 0;
-  return clamp01(axis.invert ? 1 - raw / axis.max : raw / axis.max);
+// Map a role-relative index to a radius fraction: 1.0× → the avg ring (0.5),
+// 2.0×+ → the outer ring, 0 → centre.
+function norm(role: string, axis: RadarAxis, raw: number | undefined): number {
+  return clamp01(roleIndex(role, axis.key, raw) / 2);
 }
 
 /** Build a polygon point string from a per-axis fraction (0..1). */
@@ -65,17 +70,21 @@ export function StatRadar({ series }: { series: RadarSeries[] }) {
   return (
     <div className="flex flex-col items-center">
       <svg viewBox={`0 0 ${SIZE} ${SIZE}`} className="w-full max-w-[260px]" role="img">
-        {/* concentric grid rings */}
-        {RINGS.map((f) => (
-          <polygon
-            key={f}
-            points={polygon(RADAR_AXES.map(() => f))}
-            fill="none"
-            className="text-gold-deep/40"
-            stroke="currentColor"
-            strokeWidth={0.5}
-          />
-        ))}
+        {/* concentric grid rings — the 1.0× role-average ring is highlighted */}
+        {RINGS.map((f) => {
+          const isAvg = f === AVG_RING;
+          return (
+            <polygon
+              key={f}
+              points={polygon(RADAR_AXES.map(() => f))}
+              fill="none"
+              className={isAvg ? "text-gold/60" : "text-gold-deep/40"}
+              stroke="currentColor"
+              strokeWidth={isAvg ? 0.9 : 0.5}
+              strokeDasharray={isAvg ? "2 2" : undefined}
+            />
+          );
+        })}
 
         {/* spokes */}
         {RADAR_AXES.map((ax, i) => {
@@ -96,7 +105,7 @@ export function StatRadar({ series }: { series: RadarSeries[] }) {
 
         {/* one filled polygon per player */}
         {series.map((s) => {
-          const fractions = RADAR_AXES.map((ax) => norm(ax, s.metrics[ax.key]));
+          const fractions = RADAR_AXES.map((ax) => norm(s.role, ax, s.metrics[ax.key]));
           return (
             <g key={s.label} className={s.colorClass}>
               <polygon
@@ -145,6 +154,9 @@ export function StatRadar({ series }: { series: RadarSeries[] }) {
           </span>
         ))}
       </div>
+      <p className="mt-0.5 text-center text-[0.55rem] text-parch-dim">
+        Dashed ring = average for each player&apos;s role
+      </p>
     </div>
   );
 }
