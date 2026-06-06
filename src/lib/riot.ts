@@ -113,6 +113,7 @@ interface MatchDto {
       goldEarned: number;
       totalDamageDealtToChampions: number;
       teamPosition: string;
+      teamId: number;
     }>;
   };
 }
@@ -158,22 +159,44 @@ interface GameStat {
   damage: number;
   durationMin: number;
   queueId: number;
+  // Team-relative impact, derived from the player's 5-person team in the same
+  // match. These are far more role-fair than raw CS/DPM: a support and an ADC
+  // can both post high KP / damage share appropriate to their role.
+  kp: number; // kill participation: (kills + assists) / team kills, 0..1
+  damageShare: number; // share of team's champion damage, 0..1
+  deathShare: number; // share of team's deaths, 0..1 (lower is better)
+}
+
+// Which ranked queue(s) a comparison or fetch is scoped to.
+export type QueueMode = "solo" | "flex" | "both";
+const QUEUE_ID: Record<Exclude<QueueMode, "both">, number> = { solo: 420, flex: 440 };
+
+// Match-v5's ids endpoint accepts either a specific `queue` id or a `type`
+// category — so for a single queue we ask Riot for exactly that queue, and the
+// returned games are already scoped (no sparse-pool filtering needed). For
+// "both" we fall back to `type=ranked`, which spans Solo/Duo + Flex.
+function rankedIdsQuery(queueMode: QueueMode, count: number): string {
+  const base = `start=0&count=${count}`;
+  return queueMode === "both"
+    ? `${base}&type=ranked`
+    : `${base}&queue=${QUEUE_ID[queueMode]}`;
 }
 
 /**
- * Fetch a player's recent RANKED Summoner's Rift games (Solo/Duo 420 + Flex 440)
- * as raw per-game stats. Individual match fetches that fail (e.g. transient rate
- * limit) are dropped rather than failing the whole batch.
+ * Fetch a player's recent RANKED Summoner's Rift games as raw per-game stats,
+ * scoped to the requested queue ("solo" = 420, "flex" = 440, "both" = either).
+ * Individual match fetches that fail (e.g. transient rate limit) are dropped
+ * rather than failing the whole batch.
  */
 async function fetchRankedGames(
   puuid: string,
   routing: string,
   count: number,
+  queueMode: QueueMode = "both",
 ): Promise<GameStat[]> {
-  // type=ranked returns only ranked Summoner's Rift queues (Solo/Duo + Flex).
   const ids = await riotFetch<string[]>(
     routing,
-    `/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=${count}&type=ranked`,
+    `/lol/match/v5/matches/by-puuid/${puuid}/ids?${rankedIdsQuery(queueMode, count)}`,
   );
 
   const games = await Promise.all(
@@ -184,6 +207,11 @@ async function fetchRankedGames(
         if (m.info.queueId !== 420 && m.info.queueId !== 440) return null;
         const p = m.info.participants.find((x) => x.puuid === puuid);
         if (!p) return null;
+        // Sum the player's own team to derive team-relative impact metrics.
+        const team = m.info.participants.filter((x) => x.teamId === p.teamId);
+        const teamKills = team.reduce((s, x) => s + x.kills, 0);
+        const teamDeaths = team.reduce((s, x) => s + x.deaths, 0);
+        const teamDamage = team.reduce((s, x) => s + x.totalDamageDealtToChampions, 0);
         return {
           matchId: id,
           champion: p.championName,
@@ -197,6 +225,9 @@ async function fetchRankedGames(
           damage: p.totalDamageDealtToChampions,
           durationMin: m.info.gameDuration / 60,
           queueId: m.info.queueId,
+          kp: teamKills > 0 ? (p.kills + p.assists) / teamKills : 0,
+          damageShare: teamDamage > 0 ? p.totalDamageDealtToChampions / teamDamage : 0,
+          deathShare: teamDeaths > 0 ? p.deaths / teamDeaths : 0,
         } satisfies GameStat;
       } catch {
         return null;
@@ -213,6 +244,31 @@ async function fetchRankedGames(
 const COMPARE_GAME_COUNT = 25;
 const COMPARE_WINDOWS = [10, 20, 25] as const;
 
+/** Per-game KDA ratio, used for consistency + form. */
+const gameKda = (g: GameStat) => (g.kills + g.assists) / Math.max(1, g.deaths);
+
+/** Win rate (%) of a games slice; 0 for an empty slice. */
+const winRateOf = (gs: GameStat[]) =>
+  gs.length ? Math.round((gs.filter((g) => g.win).length / gs.length) * 100) : 0;
+
+/**
+ * Form: recent half vs older half of the window (games are recency-ordered,
+ * so index 0 is the most recent). "up"/"down" only when the win-rate swing is
+ * meaningful (>10 pts) AND there are enough games to mean something.
+ */
+function computeForm(games: GameStat[]) {
+  const n = games.length;
+  if (n < 4) return undefined;
+  const half = Math.floor(n / 2);
+  const recent = games.slice(0, half);
+  const prior = games.slice(half);
+  const recentWinRate = winRateOf(recent);
+  const priorWinRate = winRateOf(prior);
+  const diff = recentWinRate - priorWinRate;
+  const trend = diff > 10 ? "up" : diff < -10 ? "down" : "flat";
+  return { recentWinRate, priorWinRate, trend } as const;
+}
+
 /** Aggregate a slice of a player's games into averages + a champion pool. */
 function aggregateWindow(games: GameStat[]) {
   const n = games.length;
@@ -228,16 +284,39 @@ function aggregateWindow(games: GameStat[]) {
       a.gold += g.gold;
       a.damage += g.damage;
       a.minutes += g.durationMin;
+      a.kp += g.kp;
+      a.damageShare += g.damageShare;
+      a.deathShare += g.deathShare;
       return a;
     },
-    { kills: 0, deaths: 0, assists: 0, cs: 0, gold: 0, damage: 0, minutes: 0 },
+    { kills: 0, deaths: 0, assists: 0, cs: 0, gold: 0, damage: 0, minutes: 0, kp: 0, damageShare: 0, deathShare: 0 },
   );
 
-  const byChamp = new Map<string, { games: number; wins: number }>();
+  // Role distribution — which positions the player actually queued, most-played
+  // first. Lets the model (and card) compare like-for-like instead of guessing.
+  const roleCount = new Map<string, number>();
   for (const g of games) {
-    const c = byChamp.get(g.champion) ?? { games: 0, wins: 0 };
+    if (g.role && g.role !== "UNKNOWN") roleCount.set(g.role, (roleCount.get(g.role) ?? 0) + 1);
+  }
+  const roles = [...roleCount.entries()]
+    .map(([role, count]) => ({ role, games: count, pct: Math.round((count / n) * 100) }))
+    .sort((a, b) => b.games - a.games);
+  const primaryRole = roles[0]?.role ?? "UNKNOWN";
+
+  // Per-champion detail: games, win rate, KDA, and CS/min (not just games + WR).
+  const byChamp = new Map<
+    string,
+    { games: number; wins: number; k: number; d: number; a: number; cs: number; mins: number }
+  >();
+  for (const g of games) {
+    const c = byChamp.get(g.champion) ?? { games: 0, wins: 0, k: 0, d: 0, a: 0, cs: 0, mins: 0 };
     c.games += 1;
     if (g.win) c.wins += 1;
+    c.k += g.kills;
+    c.d += g.deaths;
+    c.a += g.assists;
+    c.cs += g.cs;
+    c.mins += g.durationMin;
     byChamp.set(g.champion, c);
   }
   const topChampions = [...byChamp.entries()]
@@ -245,9 +324,19 @@ function aggregateWindow(games: GameStat[]) {
       champion,
       games: v.games,
       winRate: Math.round((v.wins / v.games) * 100),
+      kda: Number(((v.k + v.a) / Math.max(1, v.d)).toFixed(2)),
+      csPerMin: Number((v.cs / Math.max(1, v.mins)).toFixed(1)),
     }))
     .sort((a, b) => b.games - a.games)
     .slice(0, 3);
+
+  // Consistency: standard deviation of per-game KDA. Lower = steadier; a high
+  // value flags a feast-or-famine player whose averages hide big swings.
+  const kdas = games.map(gameKda);
+  const meanKda = kdas.reduce((s, v) => s + v, 0) / n;
+  const kdaStdev = Number(
+    Math.sqrt(kdas.reduce((s, v) => s + (v - meanKda) ** 2, 0) / n).toFixed(2),
+  );
 
   const mins = Math.max(1, totals.minutes);
   return {
@@ -255,31 +344,41 @@ function aggregateWindow(games: GameStat[]) {
     wins,
     losses: n - wins,
     winRate: Math.round((wins / n) * 100),
+    primaryRole,
+    roles,
     // KDA aggregated across the window (standard "(K+A)/D" definition).
     kda: Number(((totals.kills + totals.assists) / Math.max(1, totals.deaths)).toFixed(2)),
+    kdaStdev,
     kills: Number((totals.kills / n).toFixed(1)),
     deaths: Number((totals.deaths / n).toFixed(1)),
     assists: Number((totals.assists / n).toFixed(1)),
     csPerMin: Number((totals.cs / mins).toFixed(1)),
     dpm: Math.round(totals.damage / mins),
     goldPerMin: Math.round(totals.gold / mins),
+    // Team-relative impact (window means of per-game ratios), as percentages.
+    kp: Math.round((totals.kp / n) * 100),
+    damageShare: Math.round((totals.damageShare / n) * 100),
+    deathShare: Math.round((totals.deathShare / n) * 100),
+    form: computeForm(games),
     topChampions,
   };
 }
 
 /** Fetch + summarize one player for the comparison card. */
-async function buildPlayerSummary(riotId: string, region: string) {
+async function buildPlayerSummary(riotId: string, region: string, queueMode: QueueMode) {
   const puuid = await resolvePuuid(riotId, region);
   const host = `${region}.api.riotgames.com`;
   const routing = `${PLATFORM_TO_REGION[region]}.api.riotgames.com`;
   const [summoner, entries, games] = await Promise.all([
     riotFetch<SummonerDto>(host, `/lol/summoner/v4/summoners/by-puuid/${puuid}`),
     riotFetch<LeagueEntryDto[]>(host, `/lol/league/v4/entries/by-puuid/${puuid}`),
-    fetchRankedGames(puuid, routing, COMPARE_GAME_COUNT),
+    fetchRankedGames(puuid, routing, COMPARE_GAME_COUNT, queueMode),
   ]);
 
-  const solo = entries.find((e) => e.queueType === "RANKED_SOLO_5x5");
-  const rank = solo ? `${solo.tier} ${solo.rank} · ${solo.leaguePoints} LP` : "Unranked";
+  // Show the rank for the queue being compared; "both" defaults to Solo/Duo.
+  const rankQueue = queueMode === "flex" ? "RANKED_FLEX_SR" : "RANKED_SOLO_5x5";
+  const entry = entries.find((e) => e.queueType === rankQueue);
+  const rank = entry ? `${entry.tier} ${entry.rank} · ${entry.leaguePoints} LP` : "Unranked";
 
   const stats: Record<string, ReturnType<typeof aggregateWindow>> = {};
   for (const w of COMPARE_WINDOWS) stats[String(w)] = aggregateWindow(games.slice(0, w));
@@ -390,9 +489,28 @@ export const riotTools = {
     },
   }),
 
+  analyzePlayerStats: tool({
+    description:
+      'Aggregate ONE player\'s recent RANKED Summoner\'s Rift performance into a visual overview card with a radar chart. Set queue to scope it: "solo" = Ranked Solo/Duo, "flex" = Ranked Flex, "both" = combined (default). Returns the player\'s rank plus aggregated averages — win rate, KDA, kill participation, damage share, CS/min, DPM, gold/min, survivability (death share), role split, and most-played champions — pre-computed over their last 10, 20, and 25 games. Use this when a user asks to analyze, review, or check how a SINGLE player is performing. For a head-to-head between two players use comparePlayerStats instead.',
+    inputSchema: z.object({
+      player: z.object({
+        riotId: z.string().describe('Riot ID in "Name#TAG" format'),
+        region: regionField,
+      }),
+      queue: z
+        .enum(["solo", "flex", "both"])
+        .default("both")
+        .describe('Which ranked queue to analyze: "solo", "flex", or "both" (default).'),
+    }),
+    execute: async ({ player, queue }) => {
+      const summary = await buildPlayerSummary(player.riotId, player.region, queue);
+      return { queue, windows: COMPARE_WINDOWS.map(String), player: summary };
+    },
+  }),
+
   comparePlayerStats: tool({
     description:
-      "Compare two League of Legends players side by side across their recent RANKED Summoner's Rift games (Solo/Duo + Flex). Returns each player's rank plus aggregated averages — win rate, KDA, CS/min, damage per minute (DPM), gold per minute, and most-played champions — pre-computed over their last 10, 20, and 25 games. Use this whenever the user asks to compare, contrast, or pit two players against each other. The two players may be on different regions.",
+      'Compare two League of Legends players side by side across their recent RANKED Summoner\'s Rift games. Set queue to scope the comparison: "solo" = Ranked Solo/Duo only, "flex" = Ranked Flex only, "both" = Solo/Duo + Flex combined (default). Returns each player\'s rank (for the chosen queue) plus aggregated averages — win rate, KDA, CS/min, damage per minute (DPM), gold per minute, and most-played champions — pre-computed over their last 10, 20, and 25 games of that queue. Use this whenever the user asks to compare, contrast, or pit two players against each other. The two players may be on different regions.',
     inputSchema: z.object({
       playerA: z.object({
         riotId: z.string().describe('Riot ID in "Name#TAG" format'),
@@ -402,13 +520,17 @@ export const riotTools = {
         riotId: z.string().describe('Riot ID in "Name#TAG" format'),
         region: regionField,
       }),
+      queue: z
+        .enum(["solo", "flex", "both"])
+        .default("both")
+        .describe('Which ranked queue to compare: "solo", "flex", or "both" (default).'),
     }),
-    execute: async ({ playerA, playerB }) => {
+    execute: async ({ playerA, playerB, queue }) => {
       const [a, b] = await Promise.all([
-        buildPlayerSummary(playerA.riotId, playerA.region),
-        buildPlayerSummary(playerB.riotId, playerB.region),
+        buildPlayerSummary(playerA.riotId, playerA.region, queue),
+        buildPlayerSummary(playerB.riotId, playerB.region, queue),
       ]);
-      return { windows: COMPARE_WINDOWS.map(String), players: [a, b] };
+      return { queue, windows: COMPARE_WINDOWS.map(String), players: [a, b] };
     },
   }),
 };

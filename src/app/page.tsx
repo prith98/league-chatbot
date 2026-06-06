@@ -23,6 +23,13 @@ interface PlayerField {
   region: string;
 }
 
+type QueueMode = "solo" | "flex" | "both";
+const QUEUE_OPTIONS: { value: QueueMode; label: string }[] = [
+  { value: "solo", label: "Solo/Duo" },
+  { value: "flex", label: "Flex" },
+  { value: "both", label: "Both" },
+];
+
 function isToolPart(type: string): boolean {
   return type === "dynamic-tool" || type.startsWith("tool-");
 }
@@ -35,6 +42,7 @@ export default function Page() {
   const [showCompare, setShowCompare] = useState(false);
   const [cmpA, setCmpA] = useState<PlayerField>({ riotId: "", region: "na1" });
   const [cmpB, setCmpB] = useState<PlayerField>({ riotId: "", region: "na1" });
+  const [cmpQueue, setCmpQueue] = useState<QueueMode>("both");
   const busy = status === "submitted" || status === "streaming";
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -52,10 +60,13 @@ export default function Page() {
     const a = cmpA.riotId.trim();
     const b = cmpB.riotId.trim();
     if (!a || !b || busy) return;
-    // Spell out the exact platform codes so the agent passes them straight
-    // through to comparePlayerStats' region enum (no natural-language guessing).
+    // Spell out the exact platform codes and queue so the agent passes them
+    // straight through to comparePlayerStats' enums (no natural-language guessing).
+    const queueLabel =
+      cmpQueue === "solo" ? "Solo/Duo" : cmpQueue === "flex" ? "Flex" : "Solo/Duo + Flex";
     submit(
-      `Compare these two players over their last 25 ranked games using comparePlayerStats. ` +
+      `Compare these two players over their last 25 ranked ${queueLabel} games ` +
+        `using comparePlayerStats with queue "${cmpQueue}". ` +
         `Player A: riotId "${a}", region "${cmpA.region}". ` +
         `Player B: riotId "${b}", region "${cmpB.region}".`,
     );
@@ -286,11 +297,32 @@ export default function Page() {
               </button>
             </div>
             <p className="mb-4 mt-1 text-xs text-parch-dim">
-              Last 25 ranked games · Solo/Duo &amp; Flex · regions can differ
+              Last 25 ranked games · regions can differ
             </p>
 
             <PlayerInput label="Player 1" value={cmpA} onChange={setCmpA} />
             <PlayerInput label="Player 2" value={cmpB} onChange={setCmpB} />
+
+            <label className="mb-1 block text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
+              Queue
+            </label>
+            <div className="mb-3 flex gap-1">
+              {QUEUE_OPTIONS.map((q) => (
+                <button
+                  key={q.value}
+                  type="button"
+                  onClick={() => setCmpQueue(q.value)}
+                  className={
+                    "flex-1 rounded-md border px-2 py-1.5 text-[0.7rem] uppercase tracking-wider transition-colors " +
+                    (cmpQueue === q.value
+                      ? "border-arcane/60 bg-arcane/10 text-arcane"
+                      : "border-gold-deep/40 bg-navy/70 text-parch hover:text-gold")
+                  }
+                >
+                  {q.label}
+                </button>
+              ))}
+            </div>
 
             <button
               type="submit"
