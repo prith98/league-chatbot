@@ -390,6 +390,79 @@ function aggregateWindow(games: GameStat[]) {
   };
 }
 
+/** A player's rank string for the queue being read, e.g. "GOLD II · 45 LP".
+ *  "both" shows the Solo/Duo rank. "Unranked" when no entry exists. */
+function resolveRankString(entries: LeagueEntryDto[], queueMode: QueueMode): string {
+  const rankQueue = queueMode === "flex" ? "RANKED_FLEX_SR" : "RANKED_SOLO_5x5";
+  const entry = entries.find((e) => e.queueType === rankQueue);
+  return entry ? `${entry.tier} ${entry.rank} · ${entry.leaguePoints} LP` : "Unranked";
+}
+
+// ---- Team overview ----
+// A team overview fetches 2–5 players at once. With ~25 matches each that would
+// be 5× the comparison's call volume and blow Riot's rate limit, so team mode
+// reads fewer recent games per player — plenty to read role split, champion
+// pool, and per-role affinity. Mastery is a single pre-aggregated call per
+// player regardless of game count, so we pull a deeper pool there.
+const TEAM_GAME_COUNT = 15;
+const TEAM_WINDOWS = [10, 15] as const;
+const TEAM_MASTERY_COUNT = 8;
+const ROLE_SLOTS = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"] as const;
+
+/** Games played + win rate per role across the fetched window. Drives the
+ *  suggested role assignment: a player slots best into a role they actually
+ *  play and win on — never the one their champion implies. */
+interface RoleRecord {
+  games: number;
+  winRate: number;
+}
+function computeRoleAffinity(games: GameStat[]): Record<string, RoleRecord> {
+  const acc = new Map<string, { games: number; wins: number }>();
+  for (const g of games) {
+    if (!g.role || g.role === "UNKNOWN") continue;
+    const e = acc.get(g.role) ?? { games: 0, wins: 0 };
+    e.games += 1;
+    if (g.win) e.wins += 1;
+    acc.set(g.role, e);
+  }
+  const out: Record<string, RoleRecord> = {};
+  for (const [role, v] of acc) {
+    out[role] = { games: v.games, winRate: Math.round((v.wins / v.games) * 100) };
+  }
+  return out;
+}
+
+/** The role a player plays most (their natural position), or UNKNOWN. */
+function topAffinityRole(aff: Record<string, RoleRecord>): string {
+  let role = "UNKNOWN";
+  let most = -1;
+  for (const [r, v] of Object.entries(aff)) {
+    if (v.games > most) {
+      most = v.games;
+      role = r;
+    }
+  }
+  return role;
+}
+
+/** A player's fit for a role: games dominate, win rate is a gentle tie-break.
+ *  Zero when they've never played it, so the optimizer avoids off-role fills. */
+function roleFit(aff: Record<string, RoleRecord>, role: string): number {
+  const r = aff[role];
+  return r ? r.games + r.winRate / 100 : 0;
+}
+
+/** All orderings of an array (n! — only ever called with the 5 role slots). */
+function permute<T>(items: readonly T[]): T[][] {
+  if (items.length <= 1) return [items.slice()];
+  const out: T[][] = [];
+  items.forEach((item, i) => {
+    const rest = [...items.slice(0, i), ...items.slice(i + 1)];
+    for (const p of permute(rest)) out.push([item, ...p]);
+  });
+  return out;
+}
+
 /** Fetch + summarize one player for the comparison card. */
 async function buildPlayerSummary(riotId: string, region: string, queueMode: QueueMode) {
   const puuid = await resolvePuuid(riotId, region);
@@ -402,9 +475,7 @@ async function buildPlayerSummary(riotId: string, region: string, queueMode: Que
   ]);
 
   // Show the rank for the queue being compared; "both" defaults to Solo/Duo.
-  const rankQueue = queueMode === "flex" ? "RANKED_FLEX_SR" : "RANKED_SOLO_5x5";
-  const entry = entries.find((e) => e.queueType === rankQueue);
-  const rank = entry ? `${entry.tier} ${entry.rank} · ${entry.leaguePoints} LP` : "Unranked";
+  const rank = resolveRankString(entries, queueMode);
 
   const stats: Record<string, ReturnType<typeof aggregateWindow>> = {};
   for (const w of COMPARE_WINDOWS) stats[String(w)] = aggregateWindow(games.slice(0, w));
@@ -417,6 +488,78 @@ async function buildPlayerSummary(riotId: string, region: string, queueMode: Que
     totalGames: games.length,
     stats,
   };
+}
+
+/** Fetch + summarize one player for the team overview: the comparison summary
+ *  (rank, windowed stats, recency champ pool, role split) plus an all-time
+ *  mastery pool and per-role affinity for assignment. */
+async function buildTeamPlayerSummary(riotId: string, region: string, queueMode: QueueMode) {
+  const puuid = await resolvePuuid(riotId, region);
+  const host = `${region}.api.riotgames.com`;
+  const routing = `${PLATFORM_TO_REGION[region]}.api.riotgames.com`;
+  const [summoner, entries, games, masteryEntries, champNames] = await Promise.all([
+    riotFetch<SummonerDto>(host, `/lol/summoner/v4/summoners/by-puuid/${puuid}`),
+    riotFetch<LeagueEntryDto[]>(host, `/lol/league/v4/entries/by-puuid/${puuid}`),
+    fetchRankedGames(puuid, routing, TEAM_GAME_COUNT, queueMode),
+    riotFetch<Array<{ championId: number; championLevel: number; championPoints: number }>>(
+      host,
+      `/lol/champion-mastery/v4/champion-masteries/by-puuid/${puuid}/top?count=${TEAM_MASTERY_COUNT}`,
+    ),
+    getChampionMap(),
+  ]);
+
+  // Show the rank for the queue being read; "both" defaults to Solo/Duo.
+  const rank = resolveRankString(entries, queueMode);
+
+  const stats: Record<string, ReturnType<typeof aggregateWindow>> = {};
+  for (const w of TEAM_WINDOWS) stats[String(w)] = aggregateWindow(games.slice(0, w));
+
+  const mastery = masteryEntries.map((e) => ({
+    champion: champNames.get(e.championId) ?? `Champion ${e.championId}`,
+    level: e.championLevel,
+    points: e.championPoints,
+  }));
+
+  return {
+    riotId,
+    region,
+    summonerLevel: summoner.summonerLevel,
+    rank,
+    totalGames: games.length,
+    stats,
+    mastery,
+    roleAffinity: computeRoleAffinity(games),
+  };
+}
+
+type TeamPlayerSummary = Awaited<ReturnType<typeof buildTeamPlayerSummary>>;
+
+/** Brute-force the best role assignment: each player gets a distinct role,
+ *  maximizing total role fit. Only ever 5! = 120 permutations. With fewer than
+ *  5 players some roles stay empty; the optimizer still seats everyone where
+ *  they fit best. Each row notes the player's natural role + games on the
+ *  assigned one, so the card/agent can flag off-role fills. */
+function assignRoles(players: TeamPlayerSummary[]) {
+  let best: { score: number; perm: readonly string[] } = {
+    score: -Infinity,
+    perm: ROLE_SLOTS,
+  };
+  for (const perm of permute(ROLE_SLOTS)) {
+    let score = 0;
+    players.forEach((p, i) => {
+      if (i < perm.length) score += roleFit(p.roleAffinity, perm[i]);
+    });
+    if (score > best.score) best = { score, perm };
+  }
+  return players.map((p, i) => {
+    const role = best.perm[i] ?? "UNKNOWN";
+    return {
+      riotId: p.riotId,
+      role,
+      gamesInRole: p.roleAffinity[role]?.games ?? 0,
+      primaryRole: topAffinityRole(p.roleAffinity),
+    };
+  });
 }
 
 /** Tools the agent can call for player account & match data. */
@@ -557,6 +700,48 @@ export const riotTools = {
         buildPlayerSummary(playerB.riotId, playerB.region, queue),
       ]);
       return { queue, windows: COMPARE_WINDOWS.map(String), players: [a, b] };
+    },
+  }),
+
+  analyzeTeam: tool({
+    description:
+      'Build a TEAM OVERVIEW for 2–5 League of Legends players to help them draft together. Fetches each player\'s recent RANKED Summoner\'s Rift role distribution, per-role affinity (games + win rate), recency champion pool, and all-time champion mastery, then returns a deterministic SUGGESTED role assignment for the group plus any bans / known enemy picks the user supplied. Use this whenever the user wants to plan a team or 5-stack — assign roles, decide who plays what champion, or analyze a team composition. Set queue to "solo", "flex", or "both" (default). After it returns, present the role assignment, recommend per-role champion picks from each player\'s pool weighted by the current meta, and analyze the resulting composition. Renders a team card, so keep prose tight.',
+    inputSchema: z.object({
+      players: z
+        .array(
+          z.object({
+            riotId: z.string().describe('Riot ID in "Name#TAG" format'),
+            region: regionField,
+          }),
+        )
+        .min(2)
+        .max(5)
+        .describe("The 2–5 players on the team, each with a Riot ID and region"),
+      queue: z
+        .enum(["solo", "flex", "both"])
+        .default("both")
+        .describe('Which ranked queue to read each player from: "solo", "flex", or "both" (default).'),
+      bans: z
+        .array(z.string())
+        .optional()
+        .describe("Champion names that are banned / unavailable for this draft, if any"),
+      enemy: z
+        .array(z.string())
+        .optional()
+        .describe("Known enemy team champion picks, by name, if any"),
+    }),
+    execute: async ({ players, queue, bans, enemy }) => {
+      const summaries = await Promise.all(
+        players.map((p) => buildTeamPlayerSummary(p.riotId, p.region, queue)),
+      );
+      return {
+        queue,
+        windows: TEAM_WINDOWS.map(String),
+        players: summaries,
+        assignment: assignRoles(summaries),
+        bans: bans ?? [],
+        enemy: enemy ?? [],
+      };
     },
   }),
 };

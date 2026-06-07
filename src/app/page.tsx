@@ -43,6 +43,14 @@ export default function Page() {
   const [cmpA, setCmpA] = useState<PlayerField>({ riotId: "", region: "na1" });
   const [cmpB, setCmpB] = useState<PlayerField>({ riotId: "", region: "na1" });
   const [cmpQueue, setCmpQueue] = useState<QueueMode>("both");
+  const [showTeam, setShowTeam] = useState(false);
+  const [team, setTeam] = useState<PlayerField[]>(() =>
+    Array.from({ length: 5 }, () => ({ riotId: "", region: "na1" })),
+  );
+  const [teamQueue, setTeamQueue] = useState<QueueMode>("both");
+  const [teamRegion, setTeamRegion] = useState("na1");
+  const [teamBans, setTeamBans] = useState("");
+  const [teamEnemy, setTeamEnemy] = useState("");
   const busy = status === "submitted" || status === "streaming";
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -71,6 +79,30 @@ export default function Page() {
         `Player B: riotId "${b}", region "${cmpB.region}".`,
     );
     setShowCompare(false);
+  }
+
+  const teamValid = team.filter((p) => p.riotId.trim()).length;
+
+  function submitTeam() {
+    if (teamValid < 2 || busy) return;
+    const valid = team.filter((p) => p.riotId.trim());
+    // Spell out the exact platform codes + queue so the agent passes them
+    // straight through to analyzeTeam's enums (no natural-language guessing).
+    const queueLabel =
+      teamQueue === "solo" ? "Solo/Duo" : teamQueue === "flex" ? "Flex" : "Solo/Duo + Flex";
+    const roster = valid
+      .map((p, i) => `Player ${i + 1}: riotId "${p.riotId.trim()}", region "${p.region}"`)
+      .join(". ");
+    const bans = teamBans.trim();
+    const enemy = teamEnemy.trim();
+    submit(
+      `Give a team overview for these ${valid.length} players using analyzeTeam with queue "${teamQueue}" ` +
+        `(their last 15 ranked ${queueLabel} games). Recommend role assignments, champion picks per role ` +
+        `from each player's pool, and analyze the team composition. ${roster}.` +
+        (bans ? ` Bans: ${bans}.` : "") +
+        (enemy ? ` Enemy champions: ${enemy}.` : ""),
+    );
+    setShowTeam(false);
   }
 
   const empty = messages.length === 0;
@@ -229,13 +261,20 @@ export default function Page() {
         }}
         className="pb-5 pt-2"
       >
-        <div className="mb-3 flex justify-center">
+        <div className="mb-3 flex flex-wrap justify-center gap-2">
           <button
             type="button"
             onClick={() => setShowCompare(true)}
             className="inline-flex items-center gap-1.5 rounded-full border border-gold-deep/45 bg-navy/60 px-3.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-gold/80 transition-all hover:border-gold/60 hover:text-gold"
           >
             <span>⚔️</span> Compare two players
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowTeam(true)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-gold-deep/45 bg-navy/60 px-3.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-gold/80 transition-all hover:border-gold/60 hover:text-gold"
+          >
+            <span>🛡️</span> Team overview
           </button>
         </div>
         <div className="hex-divider mb-4" />
@@ -330,6 +369,120 @@ export default function Page() {
               className="mt-2 w-full rounded-md border border-gold/60 bg-gradient-to-b from-gold/25 to-gold-deep/25 py-2.5 text-xs font-semibold uppercase tracking-wider text-gold-bright transition-all hover:from-gold/40 hover:to-gold-deep/40 hover:shadow-[0_0_18px_-4px_rgba(200,170,110,0.6)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:shadow-none"
             >
               Compare
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* ───────── Team overview modal ───────── */}
+      {showTeam && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-void/80 px-4 backdrop-blur-sm"
+          onClick={() => setShowTeam(false)}
+        >
+          <form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitTeam();
+            }}
+            className="max-h-[90dvh] w-full max-w-md animate-rise overflow-y-auto rounded-xl border border-gold-deep/50 bg-gradient-to-b from-panel to-navy p-5 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.8)]"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-lg">🛡️</span>
+              <h3 className="font-display text-lg text-gold-bright">Team Overview</h3>
+              <button
+                type="button"
+                onClick={() => setShowTeam(false)}
+                className="ml-auto text-parch transition-colors hover:text-gold"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="mb-4 mt-1 text-xs text-parch-dim">
+              2–5 players · last 15 ranked games · roles &amp; picks suggested
+            </p>
+
+            <div className="mb-3 flex items-center gap-2">
+              <label className="text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
+                Region (all)
+              </label>
+              <select
+                value={teamRegion}
+                onChange={(e) => {
+                  setTeamRegion(e.target.value);
+                  setTeam((prev) => prev.map((p) => ({ ...p, region: e.target.value })));
+                }}
+                className="rounded-md border border-gold-deep/50 bg-navy/70 px-2 py-1.5 text-sm text-cream focus:border-arcane/60 focus:outline-none"
+              >
+                {REGIONS.map((r) => (
+                  <option key={r} value={r} className="bg-navy text-cream">
+                    {r}
+                  </option>
+                ))}
+              </select>
+              <span className="text-[0.6rem] text-parch-dim">sets every row</span>
+            </div>
+
+            {team.map((p, i) => (
+              <PlayerInput
+                key={i}
+                label={`Player ${i + 1}`}
+                value={p}
+                onChange={(v) =>
+                  setTeam((prev) => prev.map((row, idx) => (idx === i ? v : row)))
+                }
+              />
+            ))}
+
+            <label className="mb-1 block text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
+              Queue
+            </label>
+            <div className="mb-3 flex gap-1">
+              {QUEUE_OPTIONS.map((q) => (
+                <button
+                  key={q.value}
+                  type="button"
+                  onClick={() => setTeamQueue(q.value)}
+                  className={
+                    "flex-1 rounded-md border px-2 py-1.5 text-[0.7rem] uppercase tracking-wider transition-colors " +
+                    (teamQueue === q.value
+                      ? "border-arcane/60 bg-arcane/10 text-arcane"
+                      : "border-gold-deep/40 bg-navy/70 text-parch hover:text-gold")
+                  }
+                >
+                  {q.label}
+                </button>
+              ))}
+            </div>
+
+            <label className="mb-1 block text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
+              Bans <span className="text-parch-dim">(optional)</span>
+            </label>
+            <input
+              value={teamBans}
+              onChange={(e) => setTeamBans(e.target.value)}
+              placeholder="e.g. Yuumi, Zed, Darius"
+              className="mb-3 w-full rounded-md border border-gold-deep/50 bg-navy/70 px-3 py-2 text-sm text-cream placeholder:text-parch-dim focus:border-arcane/60 focus:outline-none"
+            />
+
+            <label className="mb-1 block text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
+              Enemy picks <span className="text-parch-dim">(optional)</span>
+            </label>
+            <input
+              value={teamEnemy}
+              onChange={(e) => setTeamEnemy(e.target.value)}
+              placeholder="e.g. Malphite, Kai'Sa"
+              className="mb-3 w-full rounded-md border border-gold-deep/50 bg-navy/70 px-3 py-2 text-sm text-cream placeholder:text-parch-dim focus:border-arcane/60 focus:outline-none"
+            />
+
+            <button
+              type="submit"
+              disabled={teamValid < 2 || busy}
+              className="mt-2 w-full rounded-md border border-gold/60 bg-gradient-to-b from-gold/25 to-gold-deep/25 py-2.5 text-xs font-semibold uppercase tracking-wider text-gold-bright transition-all hover:from-gold/40 hover:to-gold-deep/40 hover:shadow-[0_0_18px_-4px_rgba(200,170,110,0.6)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:shadow-none"
+            >
+              Build Overview
             </button>
           </form>
         </div>

@@ -28,6 +28,7 @@ const TOOL_META: Record<string, { icon: string; label: string }> = {
   getChampionMastery: { icon: "⭐", label: "Champion Mastery" },
   comparePlayerStats: { icon: "⚔️", label: "Player Comparison" },
   analyzePlayerStats: { icon: "📊", label: "Player Analysis" },
+  analyzeTeam: { icon: "🛡️", label: "Team Overview" },
 };
 
 function toolKey(part: ToolPart): string {
@@ -190,6 +191,7 @@ function ToolResult({ part }: { part: ToolPart }) {
   if (key === "getChampionMastery" && out) return <MasteryResult data={out} />;
   if (key === "comparePlayerStats" && out) return <ComparisonResult data={out} />;
   if (key === "analyzePlayerStats" && out) return <PlayerStatsResult data={out} />;
+  if (key === "analyzeTeam" && out) return <TeamOverviewResult data={out} />;
 
   // Generic collapsible for OP.GG / unknown tools.
   return <RawResult output={part.output} />;
@@ -415,6 +417,7 @@ interface ComparePlayer {
 
 const WINDOW_LABELS: Record<string, string> = {
   "10": "Last 10",
+  "15": "Last 15",
   "20": "Last 20",
   "25": "Last 25",
 };
@@ -921,6 +924,277 @@ function ChampPool({
           <span className="text-[0.65rem] text-cream">{c.games}g</span>
           <span className="text-[0.6rem] text-parch-dim">{c.winRate}%</span>
         </div>
+      ))}
+    </div>
+  );
+}
+
+// ---- analyzeTeam ----
+interface MasteryChamp {
+  champion: string;
+  level: number;
+  points: number;
+}
+interface TeamPlayer extends ComparePlayer {
+  mastery?: MasteryChamp[];
+  roleAffinity?: Record<string, { games: number; winRate: number }>;
+}
+interface AssignmentRow {
+  riotId: string;
+  role: string;
+  gamesInRole: number;
+  primaryRole: string;
+}
+
+const ROLE_ORDER = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"];
+const roleRank = (r: string) => {
+  const i = ROLE_ORDER.indexOf(r);
+  return i === -1 ? 99 : i;
+};
+
+function TeamOverviewResult({ data }: { data: Record<string, unknown> }) {
+  const version = useDDragonVersion();
+  const windows = (data.windows as string[]) ?? ["10", "15"];
+  const players = (data.players as TeamPlayer[]) ?? [];
+  const assignment = (data.assignment as AssignmentRow[]) ?? [];
+  const bans = (data.bans as string[]) ?? [];
+  const enemy = (data.enemy as string[]) ?? [];
+  const queue = (data.queue as string) ?? "both";
+  const queueLabel = QUEUE_LABELS[queue] ?? "Ranked";
+  const [active, setActive] = useState(windows[windows.length - 1] ?? "15");
+
+  if (players.length === 0) return <RawResult output={data} />;
+
+  const byId = new Map(players.map((p) => [p.riotId, p]));
+  // Order the suggested lineup by canonical role (Top → Support).
+  const lineup = [...assignment].sort((x, y) => roleRank(x.role) - roleRank(y.role));
+
+  return (
+    <div className="border-t border-gold-deep/30 px-3 py-3 text-xs">
+      <div className="mb-2 flex justify-center">
+        <span className="rounded-full border border-gold-deep/40 bg-navy/60 px-2 py-0.5 text-[0.6rem] uppercase tracking-[0.15em] text-gold/80">
+          {queueLabel} · Team of {players.length}
+        </span>
+      </div>
+
+      {bans.length || enemy.length ? (
+        <div className="mb-2 space-y-1">
+          {bans.length ? <DraftChips label="Bans" names={bans} tone="ban" /> : null}
+          {enemy.length ? <DraftChips label="Enemy" names={enemy} tone="enemy" /> : null}
+        </div>
+      ) : null}
+
+      <WindowToggle windows={windows} active={active} onChange={setActive} />
+
+      <div className="space-y-1.5">
+        {lineup.map((row) => {
+          const player = byId.get(row.riotId);
+          if (!player) return null;
+          return (
+            <TeamPlayerRow
+              key={row.riotId}
+              row={row}
+              player={player}
+              window={active}
+              version={version}
+            />
+          );
+        })}
+      </div>
+
+      <p className="pt-2 text-center text-[0.55rem] leading-snug text-parch-dim">
+        Suggested lineup from each player&apos;s role history · pools show recent form &amp; all-time mastery.
+      </p>
+    </div>
+  );
+}
+
+/** Compact role tag for the lineup. */
+function RolePill({ role }: { role: string }) {
+  return (
+    <span className="w-14 shrink-0 rounded border border-arcane/40 bg-arcane/10 py-0.5 text-center text-[0.55rem] font-semibold uppercase tracking-[0.1em] text-arcane">
+      {roleLabel(role)}
+    </span>
+  );
+}
+
+/** How well an assigned role matches a player's history: their main, a role
+ *  they at least play, or an off-role fill. */
+function FitBadge({
+  role,
+  primaryRole,
+  gamesInRole,
+}: {
+  role: string;
+  primaryRole: string;
+  gamesInRole: number;
+}) {
+  // No role data at all (e.g. unranked / no games this queue) — don't imply a
+  // judgement; the optimizer just slotted them into the leftover role.
+  const fit =
+    primaryRole === "UNKNOWN"
+      ? "nodata"
+      : role === primaryRole
+        ? "main"
+        : gamesInRole > 0
+          ? "flex"
+          : "off";
+  const style =
+    fit === "main"
+      ? "border-win/40 bg-win/10 text-win"
+      : fit === "flex"
+        ? "border-gold-deep/40 bg-gold/10 text-gold"
+        : fit === "off"
+          ? "border-loss/40 bg-loss/10 text-loss/90"
+          : "border-gold-deep/30 bg-navy/60 text-parch-dim";
+  const label =
+    fit === "main" ? "Main" : fit === "flex" ? "Flex" : fit === "off" ? "Off-role" : "No data";
+  return (
+    <span
+      className={"shrink-0 rounded border px-1 py-0 text-[0.5rem] uppercase tracking-wider " + style}
+    >
+      {label}
+    </span>
+  );
+}
+
+function TeamPlayerRow({
+  row,
+  player,
+  window: w,
+  version,
+}: {
+  row: AssignmentRow;
+  player: TeamPlayer;
+  window: string;
+  version: string;
+}) {
+  const s = player.stats[w] ?? { games: 0 };
+  const wr = s.winRate;
+  return (
+    <div className="rounded-md border border-gold-deep/25 bg-navy/40 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <RolePill role={row.role} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-1.5">
+            <span className="truncate font-medium text-cream">{gameName(player.riotId)}</span>
+            <FitBadge role={row.role} primaryRole={row.primaryRole} gamesInRole={row.gamesInRole} />
+          </div>
+          <div className="text-[0.6rem] text-gold/80">
+            {player.rank}
+            {s.roles?.length ? (
+              <span className="text-arcane/70"> · {rolesSummary(s.roles)}</span>
+            ) : null}
+          </div>
+        </div>
+        <div className="shrink-0 text-right leading-tight">
+          {typeof wr === "number" ? (
+            <div
+              className={"font-semibold tabular-nums " + (wr >= 50 ? "text-win" : "text-loss/90")}
+            >
+              {wr}%
+            </div>
+          ) : (
+            <div className="text-parch-dim">—</div>
+          )}
+          {typeof s.kda === "number" ? (
+            <div className="text-[0.55rem] text-parch-dim">{s.kda.toFixed(2)} KDA</div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="mt-1.5 space-y-1">
+        <PoolRow label="Recent" version={version} recency={s.topChampions} />
+        <PoolRow label="Mastery" version={version} mastery={player.mastery} />
+      </div>
+    </div>
+  );
+}
+
+/** One pool line — recency champions (with WR) or mastery champions (with M-level). */
+function PoolRow({
+  label,
+  version,
+  recency,
+  mastery,
+}: {
+  label: string;
+  version: string;
+  recency?: ChampStat[];
+  mastery?: MasteryChamp[];
+}) {
+  if (!recency?.length && !mastery?.length) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="w-12 shrink-0 text-[0.5rem] uppercase tracking-[0.1em] text-parch-dim">
+        {label}
+      </span>
+      {recency?.map((c) => (
+        <span
+          key={c.champion}
+          title={`${c.champion} · ${c.games}g · ${c.winRate}% WR`}
+          className="flex items-center gap-0.5 rounded border border-gold-deep/30 bg-navy/60 px-1 py-0.5"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={championIconUrl(c.champion, version)}
+            alt={c.champion}
+            width={14}
+            height={14}
+            className="rounded ring-1 ring-gold-deep/40"
+          />
+          <span className="text-[0.5rem] text-parch-dim">{c.winRate}%</span>
+        </span>
+      ))}
+      {mastery?.map((m) => (
+        <span
+          key={m.champion}
+          title={`${m.champion} · M${m.level} · ${Math.round(m.points / 1000)}k pts`}
+          className="flex items-center gap-0.5 rounded border border-gold-deep/30 bg-navy/60 px-1 py-0.5"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={championIconUrl(m.champion, version)}
+            alt={m.champion}
+            width={14}
+            height={14}
+            className="rounded ring-1 ring-gold-deep/40"
+          />
+          <span className="text-[0.5rem] font-semibold text-gold">M{m.level}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Banned (struck-through) or enemy champion name chips. Names are user-typed,
+ *  so we show them as text rather than risk a mismatched icon URL. */
+function DraftChips({
+  label,
+  names,
+  tone,
+}: {
+  label: string;
+  names: string[];
+  tone: "ban" | "enemy";
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="w-12 shrink-0 text-[0.5rem] uppercase tracking-[0.1em] text-parch-dim">
+        {label}
+      </span>
+      {names.map((n) => (
+        <span
+          key={n}
+          className={
+            "rounded border px-1.5 py-0.5 text-[0.55rem] " +
+            (tone === "ban"
+              ? "border-loss/40 bg-loss/10 text-loss/80 line-through"
+              : "border-gold-deep/40 bg-navy/60 text-parch")
+          }
+        >
+          {n}
+        </span>
       ))}
     </div>
   );

@@ -1,12 +1,14 @@
 # 🛡️ Rift Analyst — League of Legends AI Agent
 
-A conversational AI agent that analyzes League of Legends players and answers
-current-patch meta questions. Built with the **Vercel AI SDK** and **Claude
-Haiku 4.5**, deployable to Vercel and runnable locally.
+A conversational AI agent that analyzes League of Legends players, compares them
+head-to-head, recommends champions, and answers current-patch meta questions.
+Built with the **Vercel AI SDK** and **Claude Haiku 4.5**, deployable to Vercel
+and runnable locally.
 
 **🔗 Live demo: [league-chatbot.vercel.app](https://league-chatbot.vercel.app)**
 
-> Ask it: _"Analyze Faker#KR1 on kr"_, _"Who counters Darius top?"_,
+> Ask it: _"Analyze Faker#KR1 on kr"_, _"Compare Faker#KR1 and Chovy#KR1"_,
+> _"Who counters Darius top?"_, _"What jungler should I play to carry?"_,
 > _"Best build and runes for Jinx this patch?"_
 
 ## What it does
@@ -28,18 +30,42 @@ The agent has two complementary tool sets and decides which to call:
   server exposes the same kind of meta/build/counter data through a sanctioned,
   structured interface designed for agents.
 
+### Features
+
+- **Single-player analysis** — `analyzePlayerStats` renders an overview card
+  with a radar chart (win rate, KDA, kill participation, damage share, CS/min,
+  DPM, survivability) plus role split and top champions over the last ~25 ranked
+  games. Interpretation is role-aware — a support's low CS isn't flagged as a
+  weakness.
+- **Side-by-side comparison** — `comparePlayerStats` puts two players (any
+  regions, Solo/Flex/both) on one card with an overlaid radar. Role-dependent
+  stats are compared *relative to each player's role average*, and win-rate gaps
+  within sample-size noise are called out as noise rather than a "winner".
+- **Champion recommendations** — pulls the live lane tier list and filters by
+  playstyle (carry, tanky, engage, …) with reasons and when *not* to pick.
+- **Team draft planner** — `analyzeTeam` reads 2–5 players' role affinity and
+  champion pools and returns a suggested role assignment for the group, factoring
+  in any bans or known enemy picks.
+- **Patch-aware** — the current patch is fetched at runtime and every meta
+  answer is grounded in tool data, never the model's stale training knowledge.
+
 ## Architecture
 
 ```
-Browser (useChat UI)
+Browser (useChat UI + rich tool cards)
    └── POST /api/chat
          └── streamText(model: claude-haiku-4-5)  ← Anthropic API
                ├── Riot tools      src/lib/riot.ts   (custom, typed)
+               │     lookupSummoner · getMatchHistory · getChampionMastery
+               │     analyzePlayerStats · comparePlayerStats · analyzeTeam
                └── OP.GG MCP tools src/lib/opgg.ts   (discovered at runtime)
 ```
 
-The model runs a tool loop (up to 12 steps): e.g. for a player analysis it
-calls `lookupSummoner` → `getMatchHistory`, then synthesizes the result.
+The model runs a tool loop (up to 12 steps), grounding every answer in tool
+output. The current patch is injected into the system prompt at request time
+(`src/lib/patch.ts`). Tool results stream back as interactive cards
+(`src/components/ToolCard.tsx`), and player stats are drawn as an SVG radar
+(`src/components/StatRadar.tsx`).
 
 ## Run locally
 
@@ -89,4 +115,5 @@ Add `RIOT_API_KEY` and `ANTHROPIC_API_KEY` in the Vercel dashboard
 ## Stack
 
 Next.js 16 (App Router) · Vercel AI SDK v6 · Claude Haiku 4.5 (Anthropic API) ·
-Model Context Protocol (OP.GG) · TypeScript · Tailwind CSS · Docker.
+Model Context Protocol (OP.GG) · React 19 · react-markdown · TypeScript ·
+Tailwind CSS v4 · Docker.
