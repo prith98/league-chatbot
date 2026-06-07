@@ -276,8 +276,11 @@ async function fetchRankedGames(
 // ---- Player comparison ----
 // We fetch this many recent ranked games per player, then pre-compute aggregate
 // stats for each window so the UI can toggle between them with no refetch.
-const COMPARE_GAME_COUNT = 25;
-const COMPARE_WINDOWS = [10, 20, 25] as const;
+const COMPARE_GAME_COUNT = 50;
+const COMPARE_WINDOWS = [10, 25, 50] as const;
+// A role view is only offered when the player has at least this many games in it
+// across the fetched pool — below this the per-game averages are pure noise.
+const MIN_ROLE_GAMES = 5;
 
 /** Per-game KDA ratio, used for consistency + form. */
 const gameKda = (g: GameStat) => (g.kills + g.assists) / Math.max(1, g.deaths);
@@ -456,6 +459,19 @@ function aggregateWindow(games: GameStat[]) {
   };
 }
 
+/** Pre-aggregate a recency-ordered games slice into each requested window,
+ *  keyed by window size as a string ("10" → last 10 of these games). Shared by
+ *  the all-roles view, every per-role view, and the team card so they all stay
+ *  perfectly in sync. */
+function windowedStats(
+  games: GameStat[],
+  windows: readonly number[] = COMPARE_WINDOWS,
+): Record<string, ReturnType<typeof aggregateWindow>> {
+  const out: Record<string, ReturnType<typeof aggregateWindow>> = {};
+  for (const w of windows) out[String(w)] = aggregateWindow(games.slice(0, w));
+  return out;
+}
+
 /** A player's rank string for the queue being read, e.g. "GOLD II · 45 LP".
  *  "both" shows the Solo/Duo rank. "Unranked" when no entry exists. */
 function resolveRankString(entries: LeagueEntryDto[], queueMode: QueueMode): string {
@@ -544,8 +560,29 @@ async function buildPlayerSummary(riotId: string, region: string, queueMode: Que
   // Show the rank for the queue being compared; "both" defaults to Solo/Duo.
   const rank = resolveRankString(entries, queueMode);
 
-  const stats: Record<string, ReturnType<typeof aggregateWindow>> = {};
-  for (const w of COMPARE_WINDOWS) stats[String(w)] = aggregateWindow(games.slice(0, w));
+  // The all-roles aggregate, pre-computed per window (the default "All" view).
+  const stats = windowedStats(games);
+
+  // Per-role breakdowns, pre-computed the same way so the card can toggle a
+  // player to a single role (e.g. their Mid games) with no refetch — mirroring
+  // the per-window pre-compute above. Games stay recency-ordered, so each role
+  // slice is that role's most-recent games. Only roles with a real sample are
+  // offered; UNKNOWN (Riot couldn't infer a position) is never a role view.
+  const gamesByRole = new Map<string, GameStat[]>();
+  for (const g of games) {
+    if (!g.role || g.role === "UNKNOWN") continue;
+    const bucket = gamesByRole.get(g.role);
+    if (bucket) bucket.push(g);
+    else gamesByRole.set(g.role, [g]);
+  }
+  const byRole: Record<string, ReturnType<typeof windowedStats>> = {};
+  for (const [role, roleGames] of gamesByRole) {
+    if (roleGames.length >= MIN_ROLE_GAMES) byRole[role] = windowedStats(roleGames);
+  }
+  // Most-played role first, so the card renders the toggle pills in that order.
+  const availableRoles = Object.keys(byRole).sort(
+    (a, b) => (gamesByRole.get(b)?.length ?? 0) - (gamesByRole.get(a)?.length ?? 0),
+  );
 
   return {
     riotId,
@@ -554,6 +591,8 @@ async function buildPlayerSummary(riotId: string, region: string, queueMode: Que
     rank,
     totalGames: games.length,
     stats,
+    byRole,
+    availableRoles,
   };
 }
 
@@ -578,8 +617,7 @@ async function buildTeamPlayerSummary(riotId: string, region: string, queueMode:
   // Show the rank for the queue being read; "both" defaults to Solo/Duo.
   const rank = resolveRankString(entries, queueMode);
 
-  const stats: Record<string, ReturnType<typeof aggregateWindow>> = {};
-  for (const w of TEAM_WINDOWS) stats[String(w)] = aggregateWindow(games.slice(0, w));
+  const stats = windowedStats(games, TEAM_WINDOWS);
 
   const mastery = masteryEntries.map((e) => ({
     champion: champNames.get(e.championId) ?? `Champion ${e.championId}`,
@@ -727,7 +765,7 @@ export const riotTools = {
 
   analyzePlayerStats: tool({
     description:
-      'Aggregate ONE player\'s recent RANKED Summoner\'s Rift performance into a visual overview card with a radar chart. Set queue to scope it: "solo" = Ranked Solo/Duo, "flex" = Ranked Flex, "both" = combined (default). Returns the player\'s rank plus aggregated averages — win rate, KDA, kill participation, damage share, CS/min, DPM, gold/min, survivability (death share), role split, and most-played champions — pre-computed over their last 10, 20, and 25 games. Use this when a user asks to analyze, review, or check how a SINGLE player is performing. For a head-to-head between two players use comparePlayerStats instead.',
+      'Aggregate ONE player\'s recent RANKED Summoner\'s Rift performance into a visual overview card with a radar chart. Set queue to scope it: "solo" = Ranked Solo/Duo, "flex" = Ranked Flex, "both" = combined (default). Returns the player\'s rank plus aggregated averages — win rate, KDA, kill participation, damage share, CS/min, DPM, gold/min, survivability (death share), role split, and most-played champions — pre-computed over their last 10, 25, and 50 games. The card also lets the user interactively filter to a single role (e.g. only their Mid games). Use this when a user asks to analyze, review, or check how a SINGLE player is performing. For a head-to-head between two players use comparePlayerStats instead.',
     inputSchema: z.object({
       player: z.object({
         riotId: z.string().describe('Riot ID in "Name#TAG" format'),
@@ -746,7 +784,7 @@ export const riotTools = {
 
   comparePlayerStats: tool({
     description:
-      'Compare two League of Legends players side by side across their recent RANKED Summoner\'s Rift games. Set queue to scope the comparison: "solo" = Ranked Solo/Duo only, "flex" = Ranked Flex only, "both" = Solo/Duo + Flex combined (default). Returns each player\'s rank (for the chosen queue) plus aggregated averages — win rate, KDA, CS/min, damage per minute (DPM), gold per minute, and most-played champions — pre-computed over their last 10, 20, and 25 games of that queue. Use this whenever the user asks to compare, contrast, or pit two players against each other. The two players may be on different regions.',
+      'Compare two League of Legends players side by side across their recent RANKED Summoner\'s Rift games. Set queue to scope the comparison: "solo" = Ranked Solo/Duo only, "flex" = Ranked Flex only, "both" = Solo/Duo + Flex combined (default). Returns each player\'s rank (for the chosen queue) plus aggregated averages — win rate, KDA, CS/min, damage per minute (DPM), gold per minute, and most-played champions — pre-computed over their last 10, 25, and 50 games of that queue. The card lets the user interactively filter EACH player to a single role independently (e.g. compare player A\'s Mid games vs player B\'s ADC games). Use this whenever the user asks to compare, contrast, or pit two players against each other. The two players may be on different regions.',
     inputSchema: z.object({
       playerA: z.object({
         riotId: z.string().describe('Riot ID in "Name#TAG" format'),

@@ -73,7 +73,7 @@ function featureChampion(part: ToolPart): string | null {
     const p = out.player as
       | { stats?: Record<string, { topChampions?: { champion?: string }[] }> }
       | undefined;
-    const w = p?.stats?.["25"] ?? p?.stats?.["10"];
+    const w = p?.stats?.["50"] ?? p?.stats?.["25"] ?? p?.stats?.["10"];
     return w?.topChampions?.[0]?.champion ?? null;
   }
   return null;
@@ -426,7 +426,13 @@ interface ComparePlayer {
   summonerLevel: number;
   rank: string;
   totalGames: number;
+  // The all-roles aggregate, keyed by window. The default "All" view.
   stats: Record<string, WindowStat>;
+  // Per-role aggregates (role → window → stats), present only for roles the
+  // player played enough; powers the interactive role toggle with no refetch.
+  byRole?: Record<string, Record<string, WindowStat>>;
+  // Roles that have a view in byRole, most-played first.
+  availableRoles?: string[];
 }
 
 const WINDOW_LABELS: Record<string, string> = {
@@ -434,6 +440,7 @@ const WINDOW_LABELS: Record<string, string> = {
   "15": "Last 15",
   "20": "Last 20",
   "25": "Last 25",
+  "50": "Last 50",
 };
 
 const QUEUE_LABELS: Record<string, string> = {
@@ -478,16 +485,21 @@ function winRateMeaningful(a: WindowStat, b: WindowStat): boolean {
 
 function ComparisonResult({ data }: { data: Record<string, unknown> }) {
   const version = useDDragonVersion();
-  const windows = (data.windows as string[]) ?? ["10", "20", "25"];
+  const windows = (data.windows as string[]) ?? ["10", "25", "50"];
   const players = (data.players as ComparePlayer[]) ?? [];
   const queue = (data.queue as string) ?? "both";
   const queueLabel = QUEUE_LABELS[queue] ?? "Ranked";
-  const [active, setActive] = useState(windows[windows.length - 1] ?? "25");
+  const [active, setActive] = useState(windows[windows.length - 1] ?? "50");
+  // Each player's role filter is independent — null = all roles.
+  const [roleA, setRoleA] = useState<string | null>(null);
+  const [roleB, setRoleB] = useState<string | null>(null);
 
   if (players.length < 2) return <RawResult output={data} />;
   const [a, b] = players;
-  const sa = a.stats[active] ?? { games: 0 };
-  const sb = b.stats[active] ?? { games: 0 };
+  // Resolve the active window's stats through the selected role (or the
+  // all-roles aggregate when none is picked). Pre-computed, so no refetch.
+  const sa = (roleA ? a.byRole?.[roleA]?.[active] : a.stats[active]) ?? { games: 0 };
+  const sb = (roleB ? b.byRole?.[roleB]?.[active] : b.stats[active]) ?? { games: 0 };
 
   // Role-dependent stats (CS/min, DPM, gold/min, damage share) are only fair to
   // crown a "winner" on when both players share a role; otherwise we show them
@@ -518,13 +530,32 @@ function ComparisonResult({ data }: { data: Record<string, unknown> }) {
         <PlayerHead player={b} align="right" />
       </div>
 
-      {(sa.roles?.length || sb.roles?.length) ? (
+      {(a.stats[active]?.roles?.length || b.stats[active]?.roles?.length) ? (
         <div className="mt-1 grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-[0.6rem]">
-          <span className="text-right text-arcane/90">{rolesSummary(sa.roles)}</span>
+          <span className="text-right text-arcane/90">{rolesSummary(a.stats[active]?.roles)}</span>
           <span className="px-1 text-center uppercase tracking-[0.12em] text-gold/50">
             {sameRole ? "same role" : "roles"}
           </span>
-          <span className="text-left text-arcane/90">{rolesSummary(sb.roles)}</span>
+          <span className="text-left text-arcane/90">{rolesSummary(b.stats[active]?.roles)}</span>
+        </div>
+      ) : null}
+
+      {(a.availableRoles?.length || b.availableRoles?.length) ? (
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <RoleToggle
+            roles={a.availableRoles ?? []}
+            active={roleA}
+            counts={roleCounts(a)}
+            onChange={setRoleA}
+            align="left"
+          />
+          <RoleToggle
+            roles={b.availableRoles ?? []}
+            active={roleB}
+            counts={roleCounts(b)}
+            onChange={setRoleB}
+            align="right"
+          />
         </div>
       ) : null}
 
@@ -678,6 +709,7 @@ function WindowToggle({
       {windows.map((w) => (
         <button
           key={w}
+          type="button"
           onClick={() => onChange(w)}
           className={
             "rounded border px-2 py-0.5 text-[0.65rem] uppercase tracking-wider transition-colors " +
@@ -693,17 +725,78 @@ function WindowToggle({
   );
 }
 
+/** Game count to show on each role pill: the role's full sample in the pool,
+ *  and totalGames for the "All" pill. A role's count is the largest of its
+ *  windowed game counts (game count grows with window size), so this stays
+ *  correct regardless of which window is biggest or how the pool is sized. */
+function roleCounts(player: ComparePlayer): Record<string, number> {
+  const counts: Record<string, number> = { ALL: player.totalGames ?? 0 };
+  for (const r of player.availableRoles ?? []) {
+    const wins = player.byRole?.[r];
+    counts[r] = wins ? Math.max(0, ...Object.values(wins).map((w) => w.games ?? 0)) : 0;
+  }
+  return counts;
+}
+
+/** Role filter for one player — "All" plus a pill per role they played enough
+ *  of. `active === null` means the unfiltered all-roles view. Switching is a
+ *  pure client toggle over pre-computed stats (no refetch), like WindowToggle. */
+function RoleToggle({
+  roles,
+  active,
+  counts,
+  onChange,
+  align = "center",
+}: {
+  roles: string[];
+  active: string | null;
+  counts?: Record<string, number>;
+  onChange: (r: string | null) => void;
+  align?: "left" | "right" | "center";
+}) {
+  if (!roles || roles.length === 0) return null;
+  const justify =
+    align === "left" ? "justify-start" : align === "right" ? "justify-end" : "justify-center";
+  const pill = (key: string, label: string, value: string | null) => {
+    const n = counts?.[key];
+    return (
+      <button
+        key={key}
+        type="button"
+        onClick={() => onChange(value)}
+        className={
+          "rounded border px-1.5 py-0.5 text-[0.6rem] uppercase tracking-wider transition-colors " +
+          (active === value
+            ? "border-arcane/60 bg-arcane/10 text-arcane"
+            : "border-gold-deep/30 text-parch hover:text-gold")
+        }
+      >
+        {label}
+        {typeof n === "number" ? <span className="ml-0.5 text-parch-dim">{n}</span> : null}
+      </button>
+    );
+  };
+  return (
+    <div className={"flex flex-wrap gap-1 " + justify}>
+      {pill("ALL", "All", null)}
+      {roles.map((r) => pill(r, roleLabel(r), r))}
+    </div>
+  );
+}
+
 // ---- analyzePlayerStats (single player) ----
 function PlayerStatsResult({ data }: { data: Record<string, unknown> }) {
   const version = useDDragonVersion();
-  const windows = (data.windows as string[]) ?? ["10", "20", "25"];
+  const windows = (data.windows as string[]) ?? ["10", "25", "50"];
   const player = data.player as ComparePlayer | undefined;
   const queue = (data.queue as string) ?? "both";
   const queueLabel = QUEUE_LABELS[queue] ?? "Ranked";
-  const [active, setActive] = useState(windows[windows.length - 1] ?? "25");
+  const [active, setActive] = useState(windows[windows.length - 1] ?? "50");
+  // Role filter — null = all roles.
+  const [role, setRole] = useState<string | null>(null);
 
   if (!player) return <RawResult output={data} />;
-  const s = player.stats[active] ?? { games: 0 };
+  const s = (role ? player.byRole?.[role]?.[active] : player.stats[active]) ?? { games: 0 };
 
   return (
     <div className="border-t border-gold-deep/30 px-3 py-3 text-xs">
@@ -720,8 +813,21 @@ function PlayerStatsResult({ data }: { data: Record<string, unknown> }) {
           Lvl {player.summonerLevel} · {player.region} · {player.totalGames} games
         </div>
       </div>
-      {s.roles?.length ? (
-        <div className="mt-1 text-center text-[0.6rem] text-arcane/90">{rolesSummary(s.roles)}</div>
+      {player.stats[active]?.roles?.length ? (
+        <div className="mt-1 text-center text-[0.6rem] text-arcane/90">
+          {rolesSummary(player.stats[active]?.roles)}
+        </div>
+      ) : null}
+
+      {player.availableRoles?.length ? (
+        <div className="mt-2">
+          <RoleToggle
+            roles={player.availableRoles}
+            active={role}
+            counts={roleCounts(player)}
+            onChange={setRole}
+          />
+        </div>
       ) : null}
 
       <WindowToggle windows={windows} active={active} onChange={setActive} />

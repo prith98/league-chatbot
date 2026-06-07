@@ -73,7 +73,7 @@ export default function Page() {
     const queueLabel =
       cmpQueue === "solo" ? "Solo/Duo" : cmpQueue === "flex" ? "Flex" : "Solo/Duo + Flex";
     submit(
-      `Compare these two players over their last 25 ranked ${queueLabel} games ` +
+      `Compare these two players over their last 50 ranked ${queueLabel} games ` +
         `using comparePlayerStats with queue "${cmpQueue}". ` +
         `Player A: riotId "${a}", region "${cmpA.region}". ` +
         `Player B: riotId "${b}", region "${cmpB.region}".`,
@@ -336,7 +336,7 @@ export default function Page() {
               </button>
             </div>
             <p className="mb-4 mt-1 text-xs text-parch-dim">
-              Last 25 ranked games · regions can differ
+              Last 50 ranked games · filter by role on the card · regions can differ
             </p>
 
             <PlayerInput label="Player 1" value={cmpA} onChange={setCmpA} />
