@@ -372,8 +372,22 @@ interface ChampStat {
   champion: string;
   games: number;
   winRate: number;
+  role?: string;
   kda?: number;
   csPerMin?: number;
+  dpm?: number;
+  kp?: number;
+  damageShare?: number;
+  deathShare?: number;
+  // Each metric as a signed deviation from the champion's role average, e.g.
+  // "+18% vs avg" — the role-fair impact signal we headline instead of win rate.
+  vsRoleAvg?: {
+    csPerMin?: string;
+    damageShare?: string;
+    dpm?: string;
+    kp?: string;
+    deathShare?: string;
+  };
 }
 interface RoleStat {
   role: string;
@@ -891,6 +905,52 @@ function StatRow({
   );
 }
 
+/** The role-relative headline for a champion chip — what we now lead with
+ *  instead of a noisy small-sample win rate. Damage share carries the story for
+ *  damage roles; kill participation for supports, who deal little damage. Returns
+ *  the signed % deviation vs the role average, or null when the data is absent. */
+function champDeviation(c: ChampStat): { pct: number; label: string } | null {
+  const key = c.role === "UTILITY" ? "kp" : "damageShare";
+  const raw = c.vsRoleAvg?.[key];
+  if (!raw) return null;
+  const pct = parseInt(raw, 10); // "+18% vs avg" → 18
+  return Number.isNaN(pct) ? null : { pct, label: key === "kp" ? "KP" : "DMG" };
+}
+
+/** Green above the role average, red below, neutral at par. */
+function deviationTone(pct: number): string {
+  return pct > 0 ? "text-win" : pct < 0 ? "text-loss" : "text-parch-dim";
+}
+
+/** Hover detail for a champion chip: win rate (now a footnote) plus the full
+ *  role-relative breakdown that backs the headline deviation. */
+function champTooltip(c: ChampStat): string {
+  const base =
+    `${c.champion} · ${c.games}g · ${c.winRate}% WR` +
+    (typeof c.kda === "number" ? ` · ${c.kda} KDA` : "");
+  const va = c.vsRoleAvg;
+  if (!va) return base;
+  const dev = [
+    va.damageShare ? `dmg ${va.damageShare}` : null,
+    va.kp ? `KP ${va.kp}` : null,
+    va.csPerMin ? `CS ${va.csPerMin}` : null,
+  ].filter(Boolean);
+  return dev.length ? `${base}  ·  vs role: ${dev.join(", ")}` : base;
+}
+
+/** Chip headline: role-relative deviation when available, win rate as a fallback
+ *  for older payloads. `size` matches the surrounding chip's text scale. */
+function ChampHeadline({ c, size }: { c: ChampStat; size: string }) {
+  const dev = champDeviation(c);
+  if (!dev) return <span className={`${size} text-parch-dim`}>{c.winRate}%</span>;
+  return (
+    <span className={`${size} ${deviationTone(dev.pct)}`}>
+      {dev.label} {dev.pct >= 0 ? "+" : ""}
+      {dev.pct}%
+    </span>
+  );
+}
+
 function ChampPool({
   champs,
   version,
@@ -907,11 +967,7 @@ function ChampPool({
         <div
           key={c.champion}
           className="flex items-center gap-1 rounded border border-gold-deep/30 bg-navy/60 px-1.5 py-0.5"
-          title={
-            `${c.champion} · ${c.games} games · ${c.winRate}% WR` +
-            (typeof c.kda === "number" ? ` · ${c.kda} KDA` : "") +
-            (typeof c.csPerMin === "number" ? ` · ${c.csPerMin} CS/min` : "")
-          }
+          title={champTooltip(c)}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -922,7 +978,7 @@ function ChampPool({
             className="rounded ring-1 ring-gold-deep/40"
           />
           <span className="text-[0.65rem] text-cream">{c.games}g</span>
-          <span className="text-[0.6rem] text-parch-dim">{c.winRate}%</span>
+          <ChampHeadline c={c} size="text-[0.6rem]" />
         </div>
       ))}
     </div>
@@ -1132,7 +1188,7 @@ function PoolRow({
       {recency?.map((c) => (
         <span
           key={c.champion}
-          title={`${c.champion} · ${c.games}g · ${c.winRate}% WR`}
+          title={champTooltip(c)}
           className="flex items-center gap-0.5 rounded border border-gold-deep/30 bg-navy/60 px-1 py-0.5"
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1143,7 +1199,7 @@ function PoolRow({
             height={14}
             className="rounded ring-1 ring-gold-deep/40"
           />
-          <span className="text-[0.5rem] text-parch-dim">{c.winRate}%</span>
+          <ChampHeadline c={c} size="text-[0.5rem]" />
         </span>
       ))}
       {mastery?.map((m) => (

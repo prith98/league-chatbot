@@ -189,6 +189,34 @@ function rankedIdsQuery(queueMode: QueueMode, count: number): string {
     : `${base}&queue=${QUEUE_ID[queueMode]}`;
 }
 
+// Match details are immutable and, in a 5-stack, shared across teammates — so a
+// team overview would otherwise refetch the same game once per player. We cache
+// each MatchDto by id and share the in-flight promise, collapsing those
+// duplicates into a single Riot call. Bounded with simple LRU eviction so a
+// long-lived (Fluid Compute) instance doesn't grow without limit; failed
+// fetches are evicted so they can be retried.
+const MATCH_CACHE_MAX = 500;
+const matchCache = new Map<string, Promise<MatchDto>>();
+
+function fetchMatch(routing: string, id: string): Promise<MatchDto> {
+  const cached = matchCache.get(id);
+  if (cached) {
+    // Bump recency for LRU.
+    matchCache.delete(id);
+    matchCache.set(id, cached);
+    return cached;
+  }
+  const p = riotFetch<MatchDto>(routing, `/lol/match/v5/matches/${id}`);
+  matchCache.set(id, p);
+  // Don't cache failures — drop so a later call can retry.
+  p.catch(() => matchCache.delete(id));
+  if (matchCache.size > MATCH_CACHE_MAX) {
+    const oldest = matchCache.keys().next().value;
+    if (oldest !== undefined) matchCache.delete(oldest);
+  }
+  return p;
+}
+
 /**
  * Fetch a player's recent RANKED Summoner's Rift games as raw per-game stats,
  * scoped to the requested queue ("solo" = 420, "flex" = 440, "both" = either).
@@ -209,7 +237,7 @@ async function fetchRankedGames(
   const games = await Promise.all(
     ids.map(async (id) => {
       try {
-        const m = await riotFetch<MatchDto>(routing, `/lol/match/v5/matches/${id}`);
+        const m = await fetchMatch(routing, id);
         // Defensive: keep only Ranked Solo/Duo (420) and Flex (440).
         if (m.info.queueId !== 420 && m.info.queueId !== 440) return null;
         const p = m.info.participants.find((x) => x.puuid === puuid);
@@ -310,13 +338,23 @@ function aggregateWindow(games: GameStat[]) {
     .sort((a, b) => b.games - a.games);
   const primaryRole = roles[0]?.role ?? "UNKNOWN";
 
-  // Per-champion detail: games, win rate, KDA, and CS/min (not just games + WR).
+  // Per-champion detail: not just games + WR, but role-relative per-game impact
+  // (KDA, CS/min, DPM, KP, damage/death share vs role average). This lets the
+  // model rank a player's champions on substance rather than a noisy small-sample
+  // win rate. Mirrors the window's shape, incl. vsRoleAvg, using the role the
+  // player actually plays that champion in (not the window's primary role).
   const byChamp = new Map<
     string,
-    { games: number; wins: number; k: number; d: number; a: number; cs: number; mins: number }
+    {
+      games: number; wins: number; k: number; d: number; a: number; cs: number;
+      mins: number; damage: number; kp: number; damageShare: number; deathShare: number;
+      roles: Map<string, number>;
+    }
   >();
   for (const g of games) {
-    const c = byChamp.get(g.champion) ?? { games: 0, wins: 0, k: 0, d: 0, a: 0, cs: 0, mins: 0 };
+    const c =
+      byChamp.get(g.champion) ??
+      { games: 0, wins: 0, k: 0, d: 0, a: 0, cs: 0, mins: 0, damage: 0, kp: 0, damageShare: 0, deathShare: 0, roles: new Map<string, number>() };
     c.games += 1;
     if (g.win) c.wins += 1;
     c.k += g.kills;
@@ -324,16 +362,44 @@ function aggregateWindow(games: GameStat[]) {
     c.a += g.assists;
     c.cs += g.cs;
     c.mins += g.durationMin;
+    c.damage += g.damage;
+    c.kp += g.kp;
+    c.damageShare += g.damageShare;
+    c.deathShare += g.deathShare;
+    if (g.role && g.role !== "UNKNOWN") c.roles.set(g.role, (c.roles.get(g.role) ?? 0) + 1);
     byChamp.set(g.champion, c);
   }
   const topChampions = [...byChamp.entries()]
-    .map(([champion, v]) => ({
-      champion,
-      games: v.games,
-      winRate: Math.round((v.wins / v.games) * 100),
-      kda: Number(((v.k + v.a) / Math.max(1, v.d)).toFixed(2)),
-      csPerMin: Number((v.cs / Math.max(1, v.mins)).toFixed(1)),
-    }))
+    .map(([champion, v]) => {
+      // Role the player actually plays this champion in (falls back to the
+      // window's primary role), so vsRoleAvg compares against the right baseline.
+      const champRole = [...v.roles.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? primaryRole;
+      const champMins = Math.max(1, v.mins);
+      const csPerMin = Number((v.cs / champMins).toFixed(1));
+      const dpm = Math.round(v.damage / champMins);
+      const kp = Math.round((v.kp / v.games) * 100);
+      const damageShare = Math.round((v.damageShare / v.games) * 100);
+      const deathShare = Math.round((v.deathShare / v.games) * 100);
+      return {
+        champion,
+        games: v.games,
+        winRate: Math.round((v.wins / v.games) * 100),
+        role: champRole,
+        kda: Number(((v.k + v.a) / Math.max(1, v.d)).toFixed(2)),
+        csPerMin,
+        dpm,
+        kp,
+        damageShare,
+        deathShare,
+        vsRoleAvg: {
+          csPerMin: pctVsRoleAvg(champRole, "csPerMin", csPerMin),
+          damageShare: pctVsRoleAvg(champRole, "damageShare", damageShare),
+          dpm: pctVsRoleAvg(champRole, "dpm", dpm),
+          kp: pctVsRoleAvg(champRole, "kp", kp),
+          deathShare: pctVsRoleAvg(champRole, "deathShare", deathShare),
+        },
+      };
+    })
     .sort((a, b) => b.games - a.games)
     .slice(0, 3);
 
@@ -399,14 +465,15 @@ function resolveRankString(entries: LeagueEntryDto[], queueMode: QueueMode): str
 }
 
 // ---- Team overview ----
-// A team overview fetches 2–5 players at once. With ~25 matches each that would
-// be 5× the comparison's call volume and blow Riot's rate limit, so team mode
-// reads fewer recent games per player — plenty to read role split, champion
-// pool, and per-role affinity. Mastery is a single pre-aggregated call per
-// player regardless of game count, so we pull a deeper pool there.
-const TEAM_GAME_COUNT = 15;
-const TEAM_WINDOWS = [10, 15] as const;
-const TEAM_MASTERY_COUNT = 8;
+// A team overview fetches 2–5 players at once. Naively that's 5× the
+// comparison's call volume, but fetchMatch() dedupes shared games — and in a
+// 5-stack teammates share most of their recent matches — so the real call count
+// is far lower and team mode can read the same depth as a 1v1 comparison.
+// Mastery is a single pre-aggregated call per player regardless of game count,
+// so we pull a deep pool there for richer draft suggestions.
+const TEAM_GAME_COUNT = 25;
+const TEAM_WINDOWS = [10, 25] as const;
+const TEAM_MASTERY_COUNT = 12;
 const ROLE_SLOTS = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"] as const;
 
 /** Games played + win rate per role across the fetched window. Drives the
@@ -637,7 +704,7 @@ export const riotTools = {
     inputSchema: z.object({
       riotId: z.string().describe('Riot ID in "Name#TAG" format'),
       region: regionField,
-      count: z.number().int().min(1).max(10).default(5).describe("How many top champions to return"),
+      count: z.number().int().min(1).max(15).default(10).describe("How many top champions to return"),
     }),
     execute: async ({ riotId, region, count }) => {
       const puuid = await resolvePuuid(riotId, region);

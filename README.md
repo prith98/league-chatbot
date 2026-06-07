@@ -43,9 +43,9 @@ The agent has two complementary tool sets and decides which to call:
   within sample-size noise are called out as noise rather than a "winner".
 - **Champion recommendations** — pulls the live lane tier list and filters by
   playstyle (carry, tanky, engage, …) with reasons and when *not* to pick.
-- **Team draft planner** — `analyzeTeam` reads 2–5 players' role affinity and
-  champion pools and returns a suggested role assignment for the group, factoring
-  in any bans or known enemy picks.
+- **Team draft planner** — `analyzeTeam` reads 2–5 players' role affinity, recent
+  form (~25 ranked games each) and deep champion pools, then returns a suggested
+  role assignment for the group, factoring in any bans or known enemy picks.
 - **Patch-aware** — the current patch is fetched at runtime and every meta
   answer is grounded in tool data, never the model's stale training knowledge.
 
@@ -66,6 +66,11 @@ output. The current patch is injected into the system prompt at request time
 (`src/lib/patch.ts`). Tool results stream back as interactive cards
 (`src/components/ToolCard.tsx`), and player stats are drawn as an SVG radar
 (`src/components/StatRadar.tsx`).
+
+Match details are immutable, so `riot.ts` caches each game by ID and shares the
+in-flight request — in a 5-stack, where teammates share most of their recent
+games, this collapses the duplicate fetches into one Riot call so a team
+overview can read the same depth as a 1v1 comparison.
 
 ## Run locally
 
