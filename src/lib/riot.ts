@@ -113,7 +113,13 @@ interface MatchDto {
       neutralMinionsKilled: number;
       goldEarned: number;
       totalDamageDealtToChampions: number;
+      // teamPosition is Riot's behavioral lane inference, but it's only filled
+      // when all 5 team positions resolve uniquely — off-meta comps (e.g. Vayne
+      // mid) often blank it. individualPosition is the per-player best guess and
+      // stays populated in those cases, so we fall back to it. Neither is the
+      // *queued* role (champ-select assignment is not exposed by match-v5).
       teamPosition: string;
+      individualPosition: string;
       teamId: number;
     }>;
   };
@@ -216,7 +222,7 @@ async function fetchRankedGames(
         return {
           matchId: id,
           champion: p.championName,
-          role: p.teamPosition || "UNKNOWN",
+          role: p.teamPosition || p.individualPosition || "UNKNOWN",
           win: p.win,
           kills: p.kills,
           deaths: p.deaths,
