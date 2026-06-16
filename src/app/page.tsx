@@ -51,6 +51,9 @@ export default function Page() {
   const [teamRegion, setTeamRegion] = useState("na1");
   const [teamBans, setTeamBans] = useState("");
   const [teamEnemy, setTeamEnemy] = useState("");
+  const [showTeammates, setShowTeammates] = useState(false);
+  const [teammates, setTeammates] = useState<string[]>(() => Array.from({ length: 5 }, () => ""));
+  const [tmRegion, setTmRegion] = useState("na1");
   const busy = status === "submitted" || status === "streaming";
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -103,6 +106,25 @@ export default function Page() {
         (enemy ? ` Enemy champions: ${enemy}.` : ""),
     );
     setShowTeam(false);
+  }
+
+  const tmValid = teammates.filter((r) => r.trim()).length;
+
+  function submitTeammates() {
+    if (tmValid < 2 || busy) return;
+    const valid = teammates.filter((r) => r.trim());
+    // Name the tool, queue, and region explicitly so the agent passes them
+    // straight through to analyzeTeammates (which is Flex-only, region-locked).
+    const roster = valid
+      .map((r, i) => `Player ${i + 1}: riotId "${r.trim()}"`)
+      .join(". ");
+    submit(
+      `Compare these ${valid.length} teammates across ONLY the Ranked Flex games they played together, ` +
+        `using analyzeTeammates with region "${tmRegion}". Identify who is outperforming whom on role-fair ` +
+        `per-game contribution (not win rate, which is shared), and give each player concrete playstyle ` +
+        `adjustments to win more — use the Wins vs Losses split. ${roster}.`,
+    );
+    setShowTeammates(false);
   }
 
   const empty = messages.length === 0;
@@ -275,6 +297,13 @@ export default function Page() {
             className="inline-flex items-center gap-1.5 rounded-full border border-gold-deep/45 bg-navy/60 px-3.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-gold/80 transition-all hover:border-gold/60 hover:text-gold"
           >
             <span>🛡️</span> Team overview
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowTeammates(true)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-gold-deep/45 bg-navy/60 px-3.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-gold/80 transition-all hover:border-gold/60 hover:text-gold"
+          >
+            <span>🤝</span> Flex teammates
           </button>
         </div>
         <div className="hex-divider mb-4" />
@@ -483,6 +512,78 @@ export default function Page() {
               className="mt-2 w-full rounded-md border border-gold/60 bg-gradient-to-b from-gold/25 to-gold-deep/25 py-2.5 text-xs font-semibold uppercase tracking-wider text-gold-bright transition-all hover:from-gold/40 hover:to-gold-deep/40 hover:shadow-[0_0_18px_-4px_rgba(200,170,110,0.6)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:shadow-none"
             >
               Build Overview
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* ───────── Flex teammates modal ───────── */}
+      {showTeammates && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-void/80 px-4 backdrop-blur-sm"
+          onClick={() => setShowTeammates(false)}
+        >
+          <form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitTeammates();
+            }}
+            className="max-h-[90dvh] w-full max-w-md animate-rise overflow-y-auto rounded-xl border border-gold-deep/50 bg-gradient-to-b from-panel to-navy p-5 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.8)]"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-lg">🤝</span>
+              <h3 className="font-display text-lg text-gold-bright">Flex Teammates</h3>
+              <button
+                type="button"
+                onClick={() => setShowTeammates(false)}
+                className="ml-auto text-parch transition-colors hover:text-gold"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="mb-4 mt-1 text-xs text-parch-dim">
+              2–5 friends · only the Flex games you played together · who&apos;s carrying &amp; how to win more
+            </p>
+
+            <div className="mb-3 flex items-center gap-2">
+              <label className="text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
+                Region
+              </label>
+              <select
+                value={tmRegion}
+                onChange={(e) => setTmRegion(e.target.value)}
+                className="rounded-md border border-gold-deep/50 bg-navy/70 px-2 py-1.5 text-sm text-cream focus:border-arcane/60 focus:outline-none"
+              >
+                {REGIONS.map((r) => (
+                  <option key={r} value={r} className="bg-navy text-cream">
+                    {r}
+                  </option>
+                ))}
+              </select>
+              <span className="text-[0.6rem] text-parch-dim">Flex is region-locked</span>
+            </div>
+
+            {teammates.map((riotId, i) => (
+              <div key={i} className="mb-2">
+                <input
+                  value={riotId}
+                  onChange={(e) =>
+                    setTeammates((prev) => prev.map((v, idx) => (idx === i ? e.target.value : v)))
+                  }
+                  placeholder={`Teammate ${i + 1} · Name#TAG`}
+                  className="w-full rounded-md border border-gold-deep/50 bg-navy/70 px-3 py-2 text-sm text-cream placeholder:text-parch-dim focus:border-arcane/60 focus:outline-none"
+                />
+              </div>
+            ))}
+
+            <button
+              type="submit"
+              disabled={tmValid < 2 || busy}
+              className="mt-3 w-full rounded-md border border-gold/60 bg-gradient-to-b from-gold/25 to-gold-deep/25 py-2.5 text-xs font-semibold uppercase tracking-wider text-gold-bright transition-all hover:from-gold/40 hover:to-gold-deep/40 hover:shadow-[0_0_18px_-4px_rgba(200,170,110,0.6)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:shadow-none"
+            >
+              Compare Teammates
             </button>
           </form>
         </div>

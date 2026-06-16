@@ -34,6 +34,10 @@
   --color-win: #2ad17c;
   --color-loss: #ff4655;
 
+  /* Extra series tints — 4th/5th teammate on the comparison radar (tier crest hues) */
+  --color-diamond: #6fa8ff;
+  --color-master: #c25ce0;
+
   --font-display: var(--font-cinzel);
   --font-sans: var(--font-hanken);
   --font-mono: var(--font-geist-mono);

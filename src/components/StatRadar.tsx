@@ -64,8 +64,16 @@ function polygon(fractions: number[]): string {
   return fractions.map((f, i) => coord(i, n, f * RADIUS).join(",")).join(" ");
 }
 
-export function StatRadar({ series }: { series: RadarSeries[] }) {
-  const n = RADAR_AXES.length;
+export function StatRadar({
+  series,
+  axes = RADAR_AXES,
+}: {
+  series: RadarSeries[];
+  // Defaults to the six standard impact axes; the teammate card passes a
+  // seven-axis set that adds Vision. Geometry is angle-based, so any length works.
+  axes?: RadarAxis[];
+}) {
+  const n = axes.length;
 
   return (
     <div className="flex flex-col items-center">
@@ -76,7 +84,7 @@ export function StatRadar({ series }: { series: RadarSeries[] }) {
           return (
             <polygon
               key={f}
-              points={polygon(RADAR_AXES.map(() => f))}
+              points={polygon(axes.map(() => f))}
               fill="none"
               className={isAvg ? "text-gold/60" : "text-gold-deep/40"}
               stroke="currentColor"
@@ -87,7 +95,7 @@ export function StatRadar({ series }: { series: RadarSeries[] }) {
         })}
 
         {/* spokes */}
-        {RADAR_AXES.map((ax, i) => {
+        {axes.map((ax, i) => {
           const [x, y] = coord(i, n, RADIUS);
           return (
             <line
@@ -105,7 +113,7 @@ export function StatRadar({ series }: { series: RadarSeries[] }) {
 
         {/* one filled polygon per player */}
         {series.map((s) => {
-          const fractions = RADAR_AXES.map((ax) => norm(s.role, ax, s.metrics[ax.key]));
+          const fractions = axes.map((ax) => norm(s.role, ax, s.metrics[ax.key]));
           return (
             <g key={s.label} className={s.colorClass}>
               <polygon
@@ -118,14 +126,14 @@ export function StatRadar({ series }: { series: RadarSeries[] }) {
               />
               {fractions.map((f, i) => {
                 const [x, y] = coord(i, n, f * RADIUS);
-                return <circle key={RADAR_AXES[i].key} cx={x} cy={y} r={1.8} fill="currentColor" />;
+                return <circle key={axes[i].key} cx={x} cy={y} r={1.8} fill="currentColor" />;
               })}
             </g>
           );
         })}
 
         {/* axis labels */}
-        {RADAR_AXES.map((ax, i) => {
+        {axes.map((ax, i) => {
           const [x, y] = coord(i, n, RADIUS + 16);
           const c = Math.cos(axisAngle(i, n));
           const anchor = Math.abs(c) < 0.3 ? "middle" : c > 0 ? "start" : "end";

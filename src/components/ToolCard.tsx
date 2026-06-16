@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { championIconUrl, useDDragonVersion } from "@/lib/ddragon";
-import { StatRadar } from "@/components/StatRadar";
+import { StatRadar, RADAR_AXES, type RadarAxis } from "@/components/StatRadar";
 import { roleIndex, pctVsRoleAvg, type MetricKey } from "@/lib/roleBaselines";
 
 type ToolState =
@@ -29,6 +29,7 @@ const TOOL_META: Record<string, { icon: string; label: string }> = {
   comparePlayerStats: { icon: "⚔️", label: "Player Comparison" },
   analyzePlayerStats: { icon: "📊", label: "Player Analysis" },
   analyzeTeam: { icon: "🛡️", label: "Team Overview" },
+  analyzeTeammates: { icon: "🤝", label: "Teammate Comparison" },
 };
 
 function toolKey(part: ToolPart): string {
@@ -192,6 +193,7 @@ function ToolResult({ part }: { part: ToolPart }) {
   if (key === "comparePlayerStats" && out) return <ComparisonResult data={out} />;
   if (key === "analyzePlayerStats" && out) return <PlayerStatsResult data={out} />;
   if (key === "analyzeTeam" && out) return <TeamOverviewResult data={out} />;
+  if (key === "analyzeTeammates" && out) return <TeammateComparisonResult data={out} />;
 
   // Generic collapsible for OP.GG / unknown tools.
   return <RawResult output={part.output} />;
@@ -417,6 +419,10 @@ interface WindowStat {
   kp?: number;
   damageShare?: number;
   deathShare?: number;
+  visionScore?: number;
+  visionScorePerMin?: number;
+  wardsPlaced?: number;
+  wardsKilled?: number;
   form?: FormStat;
   topChampions?: ChampStat[];
 }
@@ -441,6 +447,10 @@ const WINDOW_LABELS: Record<string, string> = {
   "20": "Last 20",
   "25": "Last 25",
   "50": "Last 50",
+  // Teammate card outcome toggle reuses the same pill UI.
+  all: "All",
+  wins: "Wins",
+  losses: "Losses",
 };
 
 const QUEUE_LABELS: Record<string, string> = {
@@ -700,7 +710,7 @@ function WindowToggle({
   active,
   onChange,
 }: {
-  windows: string[];
+  windows: readonly string[];
   active: string;
   onChange: (w: string) => void;
 }) {
@@ -1358,6 +1368,249 @@ function DraftChips({
           {n}
         </span>
       ))}
+    </div>
+  );
+}
+
+// ---- analyzeTeammates ----
+interface TeammatePlayer {
+  riotId: string;
+  region: string;
+  summonerLevel: number;
+  rank: string;
+  totalGames: number;
+  gamesTogether: number;
+  // Pre-split aggregates over this player's shared games; card indexes [outcome].
+  together: Record<OutcomeKey, WindowStat>;
+  // Who this player actually shared games with (most-played first).
+  playedWith: { riotId: string; games: number }[];
+}
+
+const OUTCOME_KEYS = ["all", "wins", "losses"] as const;
+type OutcomeKey = (typeof OUTCOME_KEYS)[number];
+
+// Stable, distinct series colours for up to five teammates (theme tokens first,
+// then two arbitrary hextech-adjacent tints). Drives both the radar and the row
+// swatch so a player reads the same colour everywhere on the card.
+const TEAMMATE_COLORS = [
+  "text-arcane",
+  "text-gold",
+  "text-win",
+  "text-diamond",
+  "text-master",
+];
+
+// The standard six impact axes plus Vision — only the teammate card uses this.
+const TEAMMATE_AXES: RadarAxis[] = [...RADAR_AXES, { key: "visionScorePerMin", label: "Vision" }];
+
+const teammateRadarMetrics = (s: WindowStat): Record<string, number | undefined> => ({
+  ...radarMetrics(s),
+  visionScorePerMin: s.visionScorePerMin,
+});
+
+// Role-fair impact: mean of role-relative indices (higher = better, death share
+// inverted) over the metrics that compare fairly across roles. Used only to ORDER
+// the players ("who's outperforming whom"), never shown as a hard score — empty
+// slices sink to the bottom.
+const IMPACT_KEYS: MetricKey[] = ["kda", "kp", "damageShare", "deathShare", "visionScorePerMin"];
+function impactIndex(s: WindowStat): number {
+  if (!s.games) return -1;
+  const vals = IMPACT_KEYS.map((k) => roleIndex(s.primaryRole, k, s[k]));
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+function TeammateComparisonResult({ data }: { data: Record<string, unknown> }) {
+  const version = useDDragonVersion();
+  const players = (data.players as TeammatePlayer[]) ?? [];
+  const totalShared = (data.totalSharedMatches as number) ?? 0;
+  const noGames = (data.playersWithNoTogetherGames as string[]) ?? [];
+  const sparse = Boolean(data.sparseSample);
+  const [outcome, setOutcome] = useState<OutcomeKey>("all");
+
+  if (players.length < 2) return <RawResult output={data} />;
+
+  // Map each player to a stable colour by their original (unsorted) index, so a
+  // player keeps the same colour across the radar, row swatch, and outcome re-sorts.
+  const colorByRiotId = new Map(
+    players.map((p, i) => [p.riotId, TEAMMATE_COLORS[i % TEAMMATE_COLORS.length]]),
+  );
+  const colorOf = (riotId: string) => colorByRiotId.get(riotId) ?? TEAMMATE_COLORS[0];
+
+  // Resolve each player to the active outcome slice, then rank by role-fair impact.
+  const rows = players
+    .map((player) => ({ player, s: player.together?.[outcome] ?? { games: 0 } }))
+    .sort((a, b) => impactIndex(b.s) - impactIndex(a.s));
+
+  // Radar overlays every player who actually has games in this outcome view.
+  const radarSeries = rows
+    .filter((r) => r.s.games > 0)
+    .map((r) => ({
+      label: gameName(r.player.riotId),
+      colorClass: colorOf(r.player.riotId),
+      role: r.s.primaryRole ?? "UNKNOWN",
+      metrics: teammateRadarMetrics(r.s),
+    }));
+
+  return (
+    <div className="border-t border-gold-deep/30 px-3 py-3 text-xs">
+      <div className="mb-2 flex justify-center">
+        <span className="rounded-full border border-gold-deep/40 bg-navy/60 px-2 py-0.5 text-[0.6rem] uppercase tracking-[0.15em] text-gold/80">
+          Flex · {totalShared} game{totalShared === 1 ? "" : "s"} together
+        </span>
+      </div>
+
+      {sparse && (
+        <p className="mb-2 rounded border border-gold-deep/40 bg-navy/40 px-2 py-1 text-center text-[0.6rem] leading-snug text-gold/80">
+          Thin sample — fewer than 5 shared games. Read these as hints, not verdicts.
+        </p>
+      )}
+
+      <WindowToggle windows={OUTCOME_KEYS} active={outcome} onChange={(o) => setOutcome(o as OutcomeKey)} />
+
+      {radarSeries.length >= 2 ? (
+        <div className="mt-1 border-t border-gold-deep/15 pt-3">
+          <StatRadar series={radarSeries} axes={TEAMMATE_AXES} />
+        </div>
+      ) : (
+        <p className="py-2 text-center text-parch-dim">
+          {outcome === "all"
+            ? "Not enough shared games to chart yet."
+            : `Fewer than two players share ${outcome} in this pool.`}
+        </p>
+      )}
+
+      <div className="mt-3 space-y-1.5">
+        {rows.map(({ player, s }, i) => (
+          <TeammateRow
+            key={player.riotId}
+            rank={s.games > 0 ? i + 1 : null}
+            player={player}
+            s={s}
+            outcome={outcome}
+            color={colorOf(player.riotId)}
+            version={version}
+          />
+        ))}
+      </div>
+
+      {noGames.length ? (
+        <p className="pt-2 text-center text-[0.6rem] text-parch-dim">
+          No shared games found for {noGames.map(gameName).join(", ")}.
+        </p>
+      ) : null}
+
+      <p className="pt-2 text-center text-[0.55rem] leading-snug text-parch-dim">
+        Same-team Flex games only · win/loss is shared, so the read is each player&apos;s
+        per-game contribution vs their role average.
+      </p>
+    </div>
+  );
+}
+
+/** One role-fair stat tile: value plus its signed deviation from the role
+ *  average, coloured by role-relative index (higher = better; death share is
+ *  inverted, so fewer deaths reads green even though the raw % is negative). */
+function RoleFairChip({
+  label,
+  value,
+  role,
+  metric,
+  raw,
+}: {
+  label: string;
+  value: string;
+  role: string;
+  metric: MetricKey;
+  raw?: number;
+}) {
+  const dev = pctVsRoleAvg(role, metric, raw);
+  const idx = roleIndex(role, metric, raw);
+  const tone = typeof raw !== "number" ? "text-parch-dim" : idx > 1.02 ? "text-win" : idx < 0.98 ? "text-loss" : "text-parch-dim";
+  return (
+    <div className="flex flex-col items-center rounded bg-navy/30 px-1.5 py-1">
+      <span className="text-[0.5rem] uppercase tracking-[0.08em] text-gold/70">{label}</span>
+      <span className="font-semibold tabular-nums text-cream">{value}</span>
+      <span className={"text-[0.5rem] " + tone}>{dev ? dev.replace(" vs avg", "") : "·"}</span>
+    </div>
+  );
+}
+
+function TeammateRow({
+  rank,
+  player,
+  s,
+  outcome,
+  color,
+  version,
+}: {
+  rank: number | null;
+  player: TeammatePlayer;
+  s: WindowStat;
+  outcome: OutcomeKey;
+  color: string;
+  version: string;
+}) {
+  // No games for this player in the active outcome — show them muted, not hidden;
+  // their absence is itself information (e.g. "never lost together in this pool").
+  if (s.games === 0) {
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-gold-deep/15 bg-navy/20 px-2.5 py-1.5 opacity-60">
+        <span className={"h-2 w-2 shrink-0 rounded-sm " + color} style={{ background: "currentColor" }} />
+        <span className="truncate font-medium text-cream">{gameName(player.riotId)}</span>
+        <span className="ml-auto text-[0.55rem] text-parch-dim">
+          {outcome === "all" ? "no shared games" : `no shared ${outcome}`}
+        </span>
+      </div>
+    );
+  }
+
+  const role = s.primaryRole ?? "UNKNOWN";
+  const [one, many] = outcome === "wins" ? ["win", "wins"] : ["loss", "losses"];
+  const countLine =
+    outcome === "all"
+      ? `${s.games} game${s.games === 1 ? "" : "s"} · ${s.wins ?? 0}W ${s.losses ?? 0}L`
+      : `${s.games} ${s.games === 1 ? one : many}`;
+
+  return (
+    <div className="rounded-md border border-gold-deep/25 bg-navy/40 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        {rank !== null && (
+          <span className="w-4 shrink-0 text-center text-[0.6rem] font-semibold text-gold/70">{rank}</span>
+        )}
+        <span className={"h-2 w-2 shrink-0 rounded-sm " + color} style={{ background: "currentColor" }} />
+        <RolePill role={role} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-medium text-cream">{gameName(player.riotId)}</div>
+          <div className="text-[0.6rem] text-gold/80">
+            {player.rank}
+            <span className="text-parch-dim"> · {player.region}</span>
+          </div>
+        </div>
+        <div className="shrink-0 text-right text-[0.6rem] leading-tight text-parch">
+          {countLine}
+        </div>
+      </div>
+
+      <div className="mt-1.5 grid grid-cols-5 gap-1">
+        <RoleFairChip label="KDA" value={typeof s.kda === "number" ? s.kda.toFixed(2) : "—"} role={role} metric="kda" raw={s.kda} />
+        <RoleFairChip label="KP" value={typeof s.kp === "number" ? `${s.kp}%` : "—"} role={role} metric="kp" raw={s.kp} />
+        <RoleFairChip label="Dmg" value={typeof s.damageShare === "number" ? `${s.damageShare}%` : "—"} role={role} metric="damageShare" raw={s.damageShare} />
+        <RoleFairChip label="Vision" value={typeof s.visionScorePerMin === "number" ? s.visionScorePerMin.toFixed(2) : "—"} role={role} metric="visionScorePerMin" raw={s.visionScorePerMin} />
+        <RoleFairChip label="Deaths" value={typeof s.deathShare === "number" ? `${s.deathShare}%` : "—"} role={role} metric="deathShare" raw={s.deathShare} />
+      </div>
+
+      {s.topChampions?.length || player.playedWith.length ? (
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+          {s.topChampions?.length ? (
+            <ChampPool champs={s.topChampions} version={version} align="left" />
+          ) : null}
+          {player.playedWith.length ? (
+            <span className="text-[0.55rem] text-parch-dim">
+              with {player.playedWith.map((w) => `${gameName(w.riotId)} ${w.games}`).join(" · ")}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

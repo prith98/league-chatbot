@@ -72,6 +72,24 @@ in-flight request — in a 5-stack, where teammates share most of their recent
 games, this collapses the duplicate fetches into one Riot call so a team
 overview can read the same depth as a 1v1 comparison.
 
+### Riot API rate limits
+
+> **Rule:** the Riot API key is capped at **20 requests/second** (Riot's dev-key
+> per-application limit; production keys are higher but the same mechanism
+> applies). Bursting past it returns **HTTP 429** and drops games from a query.
+
+A deep query fetches one match-detail request *per game*, so analyzing the last
+50 games means ~50 requests — fired all at once via `Promise.all`, that instantly
+blows the 20 req/s cap. To stay under it, **every** Riot call funnels through a
+single shared rate limiter in `riotFetch` (`src/lib/riot.ts`): each request
+reserves the next evenly-spaced time slot, so the global request rate is paced
+just below the ceiling no matter how many queries (or team-overview players) are
+in flight at once. Combined with the immutable-match cache above, a 50-game pull
+completes in a few seconds without ever tripping a 429.
+
+The cap defaults to a safe **18 req/s** (margin under 20) and is configurable via
+the `RIOT_MAX_RPS` env var — raise it when running on a production key.
+
 ## Run locally
 
 ```bash

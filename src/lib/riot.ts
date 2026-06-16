@@ -37,7 +37,31 @@ function apiKey(): string {
   return key;
 }
 
+// ---- Rate limiting -------------------------------------------------------
+// Riot enforces a per-application request rate (dev keys: 20 req/s; see the
+// README "Riot API rate limits" section). A single deep query fans out one
+// match-detail request per game, so fetching ~50 games would otherwise fire
+// ~50 requests at once and trip the limit (HTTP 429), silently dropping games.
+//
+// Every Riot call goes through riotFetch(), so we gate it there: each request
+// reserves the next evenly-spaced time slot, capping the global rate just under
+// the ceiling. Concurrent callers (e.g. a team overview hitting 5 players at
+// once) reserve slots in order, so the pacing holds across the whole process.
+// Override the cap with RIOT_MAX_RPS when running on a production key.
+const RIOT_MAX_RPS = Number(process.env.RIOT_MAX_RPS ?? 18);
+const MIN_SPACING_MS = 1000 / RIOT_MAX_RPS;
+let nextSlotAt = 0;
+
+function reserveRateLimitSlot(): Promise<void> {
+  const now = Date.now();
+  const slot = Math.max(now, nextSlotAt);
+  nextSlotAt = slot + MIN_SPACING_MS;
+  const wait = slot - now;
+  return wait > 0 ? new Promise((resolve) => setTimeout(resolve, wait)) : Promise.resolve();
+}
+
 async function riotFetch<T>(host: string, path: string): Promise<T> {
+  await reserveRateLimitSlot();
   const res = await fetch(`https://${host}${path}`, {
     headers: { "X-Riot-Token": apiKey() },
     // Riot data changes slowly; let Vercel cache identical calls briefly.
@@ -113,6 +137,12 @@ interface MatchDto {
       neutralMinionsKilled: number;
       goldEarned: number;
       totalDamageDealtToChampions: number;
+      // Vision: how much map control a player generated. visionScore folds in
+      // wards placed, wards killed, and time they stayed lit — heavily role- and
+      // duration-dependent, so we normalize per-minute and vs role baseline.
+      visionScore: number;
+      wardsPlaced: number;
+      wardsKilled: number;
       // teamPosition is Riot's behavioral lane inference, but it's only filled
       // when all 5 team positions resolve uniquely — off-meta comps (e.g. Vayne
       // mid) often blank it. individualPosition is the per-player best guess and
@@ -155,6 +185,10 @@ function getChampionMap(): Promise<Map<number, string>> {
 /** Per-game stats for one player in one ranked Summoner's Rift match. */
 interface GameStat {
   matchId: string;
+  // Riot's team id (100 = blue, 200 = red). Lets us tell, for a shared match,
+  // whether two listed players were actually on the SAME side (teammates) or
+  // opposing each other — the teammate-comparison join hinges on this.
+  teamId: number;
   champion: string;
   role: string;
   win: boolean;
@@ -166,6 +200,12 @@ interface GameStat {
   damage: number;
   durationMin: number;
   queueId: number;
+  // Map control. visionScore is the raw in-game number; visionScorePerMin
+  // normalizes for game length so it's fair to compare and baseline by role.
+  visionScore: number;
+  visionScorePerMin: number;
+  wardsPlaced: number;
+  wardsKilled: number;
   // Team-relative impact, derived from the player's 5-person team in the same
   // match. These are far more role-fair than raw CS/DPM: a support and an ADC
   // can both post high KP / damage share appropriate to their role.
@@ -247,8 +287,10 @@ async function fetchRankedGames(
         const teamKills = team.reduce((s, x) => s + x.kills, 0);
         const teamDeaths = team.reduce((s, x) => s + x.deaths, 0);
         const teamDamage = team.reduce((s, x) => s + x.totalDamageDealtToChampions, 0);
+        const durationMin = m.info.gameDuration / 60;
         return {
           matchId: id,
+          teamId: p.teamId,
           champion: p.championName,
           role: p.teamPosition || p.individualPosition || "UNKNOWN",
           win: p.win,
@@ -258,8 +300,12 @@ async function fetchRankedGames(
           cs: p.totalMinionsKilled + p.neutralMinionsKilled,
           gold: p.goldEarned,
           damage: p.totalDamageDealtToChampions,
-          durationMin: m.info.gameDuration / 60,
+          durationMin,
           queueId: m.info.queueId,
+          visionScore: p.visionScore,
+          visionScorePerMin: p.visionScore / Math.max(0.1, durationMin),
+          wardsPlaced: p.wardsPlaced,
+          wardsKilled: p.wardsKilled,
           kp: teamKills > 0 ? (p.kills + p.assists) / teamKills : 0,
           damageShare: teamDamage > 0 ? p.totalDamageDealtToChampions / teamDamage : 0,
           deathShare: teamDeaths > 0 ? p.deaths / teamDeaths : 0,
@@ -325,9 +371,13 @@ function aggregateWindow(games: GameStat[]) {
       a.kp += g.kp;
       a.damageShare += g.damageShare;
       a.deathShare += g.deathShare;
+      a.visionScore += g.visionScore;
+      a.visionPerMin += g.visionScorePerMin;
+      a.wardsPlaced += g.wardsPlaced;
+      a.wardsKilled += g.wardsKilled;
       return a;
     },
-    { kills: 0, deaths: 0, assists: 0, cs: 0, gold: 0, damage: 0, minutes: 0, kp: 0, damageShare: 0, deathShare: 0 },
+    { kills: 0, deaths: 0, assists: 0, cs: 0, gold: 0, damage: 0, minutes: 0, kp: 0, damageShare: 0, deathShare: 0, visionScore: 0, visionPerMin: 0, wardsPlaced: 0, wardsKilled: 0 },
   );
 
   // Role distribution — which positions the player actually queued, most-played
@@ -418,6 +468,12 @@ function aggregateWindow(games: GameStat[]) {
   const csPerMin = Number((totals.cs / mins).toFixed(1));
   const dpm = Math.round(totals.damage / mins);
   const goldPerMin = Math.round(totals.gold / mins);
+  // Vision: per-game average score + a per-minute figure (the role-baselined one)
+  // and the raw ward counts as informational color.
+  const visionScore = Number((totals.visionScore / n).toFixed(1));
+  const visionScorePerMin = Number((totals.visionPerMin / n).toFixed(2));
+  const wardsPlaced = Number((totals.wardsPlaced / n).toFixed(1));
+  const wardsKilled = Number((totals.wardsKilled / n).toFixed(1));
   // Team-relative impact (window means of per-game ratios), as percentages.
   const kp = Math.round((totals.kp / n) * 100);
   const damageShare = Math.round((totals.damageShare / n) * 100);
@@ -432,6 +488,7 @@ function aggregateWindow(games: GameStat[]) {
     dpm: pctVsRoleAvg(primaryRole, "dpm", dpm),
     goldPerMin: pctVsRoleAvg(primaryRole, "goldPerMin", goldPerMin),
     deathShare: pctVsRoleAvg(primaryRole, "deathShare", deathShare),
+    visionScorePerMin: pctVsRoleAvg(primaryRole, "visionScorePerMin", visionScorePerMin),
   };
 
   return {
@@ -453,6 +510,10 @@ function aggregateWindow(games: GameStat[]) {
     kp,
     damageShare,
     deathShare,
+    visionScore,
+    visionScorePerMin,
+    wardsPlaced,
+    wardsKilled,
     vsRoleAvg,
     form: computeForm(games),
     topChampions,
@@ -470,6 +531,18 @@ function windowedStats(
   const out: Record<string, ReturnType<typeof aggregateWindow>> = {};
   for (const w of windows) out[String(w)] = aggregateWindow(games.slice(0, w));
   return out;
+}
+
+/** Split a games slice into All / Wins / Losses, each pre-aggregated, so the
+ *  teammate card's outcome toggle is a zero-refetch index (mirrors
+ *  windowedStats). aggregateWindow tolerates an empty slice, so a player with
+ *  no wins (or no losses) together still yields a safe { games: 0 } bucket. */
+function outcomeSlices(games: GameStat[]) {
+  return {
+    all: aggregateWindow(games),
+    wins: aggregateWindow(games.filter((g) => g.win)),
+    losses: aggregateWindow(games.filter((g) => !g.win)),
+  };
 }
 
 /** A player's rank string for the queue being read, e.g. "GOLD II · 45 LP".
@@ -667,6 +740,164 @@ function assignRoles(players: TeamPlayerSummary[]) {
   });
 }
 
+// ---- Teammate comparison ----
+// How many recent Flex games to pull per player when hunting for the games they
+// played TOGETHER. A real Flex stack shares most of these and fetchMatch dedupes
+// the detail calls, so a deeper pool surfaces more shared games cheaply.
+const TEAMMATE_GAME_COUNT = 50;
+// A match counts as a "together" game when at least this many listed players were
+// on the SAME team in it (the user chose the flexible-subset definition).
+const TEAMMATE_MIN_TOGETHER = 2;
+// Below this many together-games, a per-player read is essentially noise.
+const TEAMMATE_MIN_SAMPLE = 5;
+
+/** One listed player after PUUID resolution + their recent Flex games. */
+interface ResolvedTeammate {
+  riotId: string;
+  region: string;
+  puuid: string;
+  summonerLevel: number;
+  rank: string;
+  totalGames: number;
+  games: GameStat[];
+}
+
+/**
+ * From each listed player's recent Flex games, find the matches where ≥2 of them
+ * shared a team, and return per player (by puuid) the subset of THEIR games that
+ * qualify as together-games — plus a co-occurrence count between every pair.
+ *
+ * Correctness: a (matchId, teamId) side only qualifies when ≥2 listed players sat
+ * on it, so two listed players who happened to be on OPPOSITE teams in the same
+ * match are never counted as having played together that game.
+ */
+function buildTogetherPool(players: ResolvedTeammate[]): {
+  togetherByPuuid: Map<string, GameStat[]>;
+  coCounts: Map<string, Map<string, number>>;
+} {
+  // matchId → teamId → the listed puuids who played on that side.
+  const byMatchTeam = new Map<string, Map<number, string[]>>();
+  for (const pl of players) {
+    for (const g of pl.games) {
+      let teams = byMatchTeam.get(g.matchId);
+      if (!teams) {
+        teams = new Map();
+        byMatchTeam.set(g.matchId, teams);
+      }
+      const side = teams.get(g.teamId);
+      if (side) side.push(pl.puuid);
+      else teams.set(g.teamId, [pl.puuid]);
+    }
+  }
+
+  // The single qualifying (matchId → teamId) side where the group stacked, plus a
+  // pairwise tally so the card can show how thin each pair's shared sample is.
+  // If listed players landed on BOTH teams that match, the group was split into
+  // opponents — not a game they played *together* — so we drop the match entirely.
+  const qualified = new Map<string, number>();
+  const coCounts = new Map<string, Map<string, number>>();
+  const bump = (a: string, b: string) => {
+    const m = coCounts.get(a) ?? new Map<string, number>();
+    m.set(b, (m.get(b) ?? 0) + 1);
+    coCounts.set(a, m);
+  };
+  for (const [matchId, teams] of byMatchTeam) {
+    if (teams.size > 1) continue; // listed players were split across both sides
+    for (const [teamId, puuids] of teams) {
+      if (puuids.length < TEAMMATE_MIN_TOGETHER) continue;
+      qualified.set(matchId, teamId);
+      for (let i = 0; i < puuids.length; i++) {
+        for (let j = i + 1; j < puuids.length; j++) {
+          bump(puuids[i], puuids[j]);
+          bump(puuids[j], puuids[i]);
+        }
+      }
+    }
+  }
+
+  const togetherByPuuid = new Map<string, GameStat[]>();
+  for (const pl of players) {
+    togetherByPuuid.set(
+      pl.puuid,
+      pl.games.filter((g) => qualified.get(g.matchId) === g.teamId),
+    );
+  }
+  return { togetherByPuuid, coCounts };
+}
+
+/** Resolve every listed player, fetch their Flex games, find the games they
+ *  played together, and aggregate each player over only those shared games —
+ *  pre-split into All / Wins / Losses for the card's outcome toggle. */
+async function buildTeammateSummary(inputs: Array<{ riotId: string; region: string }>) {
+  // Resolve + fetch all players in parallel. One bad Riot ID shouldn't sink the
+  // whole card — drop it and let the caller surface the shortfall.
+  const resolved = await Promise.all(
+    inputs.map(async (inp): Promise<ResolvedTeammate | null> => {
+      try {
+        const puuid = await resolvePuuid(inp.riotId, inp.region);
+        const host = `${inp.region}.api.riotgames.com`;
+        const routing = `${PLATFORM_TO_REGION[inp.region]}.api.riotgames.com`;
+        const [summoner, entries, games] = await Promise.all([
+          riotFetch<SummonerDto>(host, `/lol/summoner/v4/summoners/by-puuid/${puuid}`),
+          riotFetch<LeagueEntryDto[]>(host, `/lol/league/v4/entries/by-puuid/${puuid}`),
+          fetchRankedGames(puuid, routing, TEAMMATE_GAME_COUNT, "flex"),
+        ]);
+        return {
+          riotId: inp.riotId,
+          region: inp.region,
+          puuid,
+          summonerLevel: summoner.summonerLevel,
+          rank: resolveRankString(entries, "flex"),
+          totalGames: games.length,
+          games,
+        };
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  const found = resolved.filter((r): r is ResolvedTeammate => r !== null);
+  if (found.length < 2) {
+    throw new RiotError(
+      "Couldn't read at least two of those players. Check the Riot IDs and that everyone is on the selected region.",
+    );
+  }
+
+  const { togetherByPuuid, coCounts } = buildTogetherPool(found);
+  const riotIdByPuuid = new Map(found.map((p) => [p.puuid, p.riotId]));
+
+  const players = found.map((p) => ({
+    riotId: p.riotId,
+    region: p.region,
+    summonerLevel: p.summonerLevel,
+    rank: p.rank,
+    totalGames: p.totalGames,
+    gamesTogether: (togetherByPuuid.get(p.puuid) ?? []).length,
+    together: outcomeSlices(togetherByPuuid.get(p.puuid) ?? []),
+    // Who this player actually shared games with, most-played first — makes the
+    // mismatched denominators of the flexible-subset view honest.
+    playedWith: [...(coCounts.get(p.puuid)?.entries() ?? [])]
+      .map(([other, games]) => ({ riotId: riotIdByPuuid.get(other) ?? other, games }))
+      .sort((a, b) => b.games - a.games),
+  }));
+
+  // Unique matches in which any qualifying stack formed (deduped across players).
+  const totalSharedMatches = new Set(
+    found.flatMap((p) => (togetherByPuuid.get(p.puuid) ?? []).map((g) => g.matchId)),
+  ).size;
+  const maxTogether = Math.max(0, ...players.map((p) => p.gamesTogether));
+
+  return {
+    queue: "flex" as const,
+    players,
+    totalSharedMatches,
+    playersWithNoTogetherGames: players.filter((p) => p.gamesTogether === 0).map((p) => p.riotId),
+    // Flag a thin pool: even the best-sampled player has < the noise threshold.
+    sparseSample: maxTogether > 0 && maxTogether < TEAMMATE_MIN_SAMPLE,
+  };
+}
+
 /** Tools the agent can call for player account & match data. */
 export const riotTools = {
   lookupSummoner: tool({
@@ -848,5 +1079,26 @@ export const riotTools = {
         enemy: enemy ?? [],
       };
     },
+  }),
+
+  analyzeTeammates: tool({
+    description:
+      'Compare 2–5 League of Legends players ACROSS ONLY THE RANKED FLEX GAMES THEY PLAYED TOGETHER (on the same team). Use this whenever a user wants to compare themselves with friends/teammates they duo/trio/5-stack with — e.g. "compare me and my friends in flex", "who carries our flex games", "how do we play in our wins vs losses". It fetches each player\'s recent Flex games, finds the matches where at least 2 of the listed players were on the same team, and returns each player\'s performance aggregated over ONLY those shared games — pre-split into All / Wins / Losses (the card has an outcome toggle). Per player it returns: their Flex rank, gamesTogether (how many shared games THEY were in — these differ per player and are shown), playedWith (who they shared games with + counts), and role-fair stats incl. KDA, kill participation, damage share, death share, CS/min, DPM, vision score, all with vsRoleAvg deviations. IMPORTANT: because teammates share the same win/loss in a given game, win rate is NOT a differentiator here — compare per-game CONTRIBUTION (role-fair) and use the Wins vs Losses split to find how each player\'s game changes between victories and defeats. All players must be on the same region (Flex is region-locked).',
+    inputSchema: z.object({
+      players: z
+        .array(
+          z.object({
+            riotId: z.string().describe('Riot ID in "Name#TAG" format'),
+          }),
+        )
+        .min(2)
+        .max(5)
+        .describe(
+          "The 2–5 teammates to compare, each by Riot ID. They must all be on the same region (Flex is region-locked) — pass that shared region in the region field.",
+        ),
+      region: regionField,
+    }),
+    execute: async ({ players, region }) =>
+      buildTeammateSummary(players.map((p) => ({ riotId: p.riotId, region }))),
   }),
 };
