@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# editor / agent tooling caches
+/.serena/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
