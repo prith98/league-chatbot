@@ -1,40 +1,51 @@
-import type { Metadata } from "next";
-import { Cinzel, Hanken_Grotesk, Geist_Mono } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Bricolage_Grotesque, IBM_Plex_Mono, Instrument_Sans } from "next/font/google";
 import "./globals.css";
 
-const cinzel = Cinzel({
-  variable: "--font-cinzel",
+/* Three faces, three jobs — the split is the type system.
+   Bricolage carries the voice (wordmark, headlines) and is used sparingly.
+   Instrument Sans is everything a person reads as language.
+   Plex Mono is everything a person reads as a measurement. */
+const bricolage = Bricolage_Grotesque({
+  variable: "--font-bricolage",
   subsets: ["latin"],
-  weight: ["500", "600", "700"],
+  weight: "variable",
+  axes: ["opsz"],
+  display: "swap",
 });
 
-const hanken = Hanken_Grotesk({
-  variable: "--font-hanken",
+const instrument = Instrument_Sans({
+  variable: "--font-instrument",
   subsets: ["latin"],
+  display: "swap",
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const plex = IBM_Plex_Mono({
+  variable: "--font-plex",
   subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "Rift Analyst — LoL AI Agent",
+  title: "Rift Analyst — scouting reports for League of Legends",
   description:
-    "AI agent for League of Legends: player analysis via the Riot API and champion meta/builds via OP.GG.",
+    "Scout any League of Legends player, matchup, or team draft. Live records from the Riot API and current-patch meta from OP.GG, read against each role's own average.",
+  applicationName: "Rift Analyst",
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export const viewport: Viewport = {
+  themeColor: "#0b0e14",
+  colorScheme: "dark",
+};
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html
       lang="en"
-      className={`${cinzel.variable} ${hanken.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${bricolage.variable} ${instrument.variable} ${plex.variable} h-full`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full">{children}</body>
     </html>
   );
 }

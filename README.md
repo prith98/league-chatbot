@@ -49,6 +49,30 @@ The agent has two complementary tool sets and decides which to call:
 - **Patch-aware** — the current patch is fetched at runtime and every meta
   answer is grounded in tool data, never the model's stale training knowledge.
 
+## Design
+
+Every figure in the interface is shown against the average for the role that
+produced it — 1.3 CS a minute is an ordinary game for a support and a
+catastrophe for a mid-laner. That rule drives the colour system (hue is
+reserved for data; the chrome is achromatic), the charts (at most three series
+per plot, then small multiples), and the layout.
+
+The reasoning, the measurements, and the trade-offs are written up in
+**[docs/design-case-study.md](docs/design-case-study.md)** — with screenshots
+and a live demo of the core component in the
+[published version](https://claude.ai/code/artifact/b489f4ae-cd7c-4cd1-b31b-312f0e4101a6).
+
+Two rules to know before editing the UI:
+
+1. **No coloured buttons, borders, or accents.** Emphasis in the chrome is
+   carried by value and weight, never hue.
+2. **Series colours are a fixed slot order, never cycled**, and at most three
+   may share one plot (`src/lib/viz.ts` documents why).
+
+Run `npm run dev` and open `/preview` for a gallery of every report card
+rendered from synthetic fixtures — useful for checking layout at any breakpoint
+without spending Riot API rate limit. The route 404s in production.
+
 ## Architecture
 
 ```
@@ -64,8 +88,11 @@ Browser (useChat UI + rich tool cards)
 The model runs a tool loop (up to 12 steps), grounding every answer in tool
 output. The current patch is injected into the system prompt at request time
 (`src/lib/patch.ts`). Tool results stream back as interactive cards
-(`src/components/ToolCard.tsx`), and player stats are drawn as an SVG radar
-(`src/components/StatRadar.tsx`).
+(`src/components/tools/`), and player stats are drawn as an SVG radar
+(`src/components/viz/StatRadar.tsx`).
+
+Plain lookups collapse into a compact run log; only the four analyses render as
+full reports — see `isReport` in `src/components/tools/types.ts`.
 
 Match details are immutable, so `riot.ts` caches each game by ID and shares the
 in-flight request — in a 5-stack, where teammates share most of their recent

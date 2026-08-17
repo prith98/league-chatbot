@@ -24,3 +24,25 @@ export const PLATFORM_TO_REGION: Record<string, "americas" | "europe" | "asia"> 
 /** All supported platform codes. The single source of truth for both the
  * server-side Zod enum and the client-side region picker. */
 export const PLATFORMS = Object.keys(PLATFORM_TO_REGION) as [string, ...string[]];
+
+/**
+ * What each platform code is actually called. The picker shows the name a
+ * player would use out loud and keeps the code alongside it, because the code
+ * is what they see in an op.gg URL.
+ */
+export const PLATFORM_LABELS: Record<string, string> = {
+  na1: "North America",
+  br1: "Brazil",
+  la1: "Latin America North",
+  la2: "Latin America South",
+  oc1: "Oceania",
+  euw1: "EU West",
+  eun1: "EU Nordic & East",
+  tr1: "Türkiye",
+  ru: "Russia",
+  kr: "Korea",
+  jp1: "Japan",
+};
+
+export const platformLabel = (code: string) =>
+  `${PLATFORM_LABELS[code] ?? code.toUpperCase()} (${code})`;

@@ -2,647 +2,291 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useEffect, useRef, useState } from "react";
-import { Markdown } from "@/components/Markdown";
-import { ToolCard, type ToolPart } from "@/components/ToolCard";
-import { RiftEmblem } from "@/components/RiftEmblem";
-import { PLATFORMS } from "@/lib/regions";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Icon, Mark } from "@/components/ui/icons";
+import { Button } from "@/components/ui/controls";
+import {
+  ANALYSES,
+  AnalysisForms,
+  AnalysisPicker,
+  type AnalysisId,
+} from "@/components/chat/analyses";
+import { Composer } from "@/components/chat/Composer";
+import { Turn, Working, type UIMessage } from "@/components/chat/Conversation";
+import { EmptyState } from "@/components/chat/EmptyState";
 
-const SUGGESTIONS = [
-  { tag: "Player", text: "Analyze Faker#KR1 on the kr region" },
-  { tag: "Matchup", text: "Who counters Darius top right now?" },
-  { tag: "Build", text: "Best build and runes for Jinx this patch" },
-  { tag: "Meta", text: "What are the strongest mid laners currently?" },
-];
+/* ============================================================================
+   The shell
 
-// Riot platform codes — shared with the server-side Zod enum.
-const REGIONS = PLATFORMS;
-
-interface PlayerField {
-  riotId: string;
-  region: string;
-}
-
-type QueueMode = "solo" | "flex" | "both";
-const QUEUE_OPTIONS: { value: QueueMode; label: string }[] = [
-  { value: "solo", label: "Solo/Duo" },
-  { value: "flex", label: "Flex" },
-  { value: "both", label: "Both" },
-];
-
-function isToolPart(type: string): boolean {
-  return type === "dynamic-tool" || type.startsWith("tool-");
-}
+   Desktop is a two-pane workspace: a rail that keeps the four analyses
+   permanently reachable, and a document column for the conversation. Mobile
+   collapses the rail to a bar and moves the analyses behind a sheet, because
+   240px of navigation on a 390px screen is not navigation.
+   ========================================================================= */
 
 export default function Page() {
-  const { messages, sendMessage, status, stop, error } = useChat({
+  const { messages, sendMessage, status, stop, error, setMessages, clearError } = useChat({
     transport: new DefaultChatTransport({ api: "/api/chat" }),
   });
+
   const [input, setInput] = useState("");
-  const [showCompare, setShowCompare] = useState(false);
-  const [cmpA, setCmpA] = useState<PlayerField>({ riotId: "", region: "na1" });
-  const [cmpB, setCmpB] = useState<PlayerField>({ riotId: "", region: "na1" });
-  const [cmpQueue, setCmpQueue] = useState<QueueMode>("both");
-  const [showTeam, setShowTeam] = useState(false);
-  const [team, setTeam] = useState<PlayerField[]>(() =>
-    Array.from({ length: 5 }, () => ({ riotId: "", region: "na1" })),
-  );
-  const [teamQueue, setTeamQueue] = useState<QueueMode>("both");
-  const [teamRegion, setTeamRegion] = useState("na1");
-  const [teamBans, setTeamBans] = useState("");
-  const [teamEnemy, setTeamEnemy] = useState("");
-  const [showTeammates, setShowTeammates] = useState(false);
-  const [teammates, setTeammates] = useState<string[]>(() => Array.from({ length: 5 }, () => ""));
-  const [tmRegion, setTmRegion] = useState("na1");
+  const [picker, setPicker] = useState(false);
+  const [form, setForm] = useState<AnalysisId | null>(null);
+
   const busy = status === "submitted" || status === "streaming";
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, status]);
-
-  function submit(text: string) {
-    if (!text.trim() || busy) return;
-    sendMessage({ text });
-    setInput("");
-  }
-
-  function submitCompare() {
-    const a = cmpA.riotId.trim();
-    const b = cmpB.riotId.trim();
-    if (!a || !b || busy) return;
-    // Spell out the exact platform codes and queue so the agent passes them
-    // straight through to comparePlayerStats' enums (no natural-language guessing).
-    const queueLabel =
-      cmpQueue === "solo" ? "Solo/Duo" : cmpQueue === "flex" ? "Flex" : "Solo/Duo + Flex";
-    submit(
-      `Compare these two players over their last 50 ranked ${queueLabel} games ` +
-        `using comparePlayerStats with queue "${cmpQueue}". ` +
-        `Player A: riotId "${a}", region "${cmpA.region}". ` +
-        `Player B: riotId "${b}", region "${cmpB.region}".`,
-    );
-    setShowCompare(false);
-  }
-
-  const teamValid = team.filter((p) => p.riotId.trim()).length;
-
-  function submitTeam() {
-    if (teamValid < 2 || busy) return;
-    const valid = team.filter((p) => p.riotId.trim());
-    // Spell out the exact platform codes + queue so the agent passes them
-    // straight through to analyzeTeam's enums (no natural-language guessing).
-    const queueLabel =
-      teamQueue === "solo" ? "Solo/Duo" : teamQueue === "flex" ? "Flex" : "Solo/Duo + Flex";
-    const roster = valid
-      .map((p, i) => `Player ${i + 1}: riotId "${p.riotId.trim()}", region "${p.region}"`)
-      .join(". ");
-    const bans = teamBans.trim();
-    const enemy = teamEnemy.trim();
-    submit(
-      `Give a team overview for these ${valid.length} players using analyzeTeam with queue "${teamQueue}" ` +
-        `(their last 15 ranked ${queueLabel} games). Recommend role assignments, champion picks per role ` +
-        `from each player's pool, and analyze the team composition. ${roster}.` +
-        (bans ? ` Bans: ${bans}.` : "") +
-        (enemy ? ` Enemy champions: ${enemy}.` : ""),
-    );
-    setShowTeam(false);
-  }
-
-  const tmValid = teammates.filter((r) => r.trim()).length;
-
-  function submitTeammates() {
-    if (tmValid < 2 || busy) return;
-    const valid = teammates.filter((r) => r.trim());
-    // Name the tool, queue, and region explicitly so the agent passes them
-    // straight through to analyzeTeammates (which is Flex-only, region-locked).
-    const roster = valid
-      .map((r, i) => `Player ${i + 1}: riotId "${r.trim()}"`)
-      .join(". ");
-    submit(
-      `Compare these ${valid.length} teammates across ONLY the Ranked Flex games they played together, ` +
-        `using analyzeTeammates with region "${tmRegion}". Identify who is outperforming whom on role-fair ` +
-        `per-game contribution (not win rate, which is shared), and give each player concrete playstyle ` +
-        `adjustments to win more — use the Wins vs Losses split. ${roster}.`,
-    );
-    setShowTeammates(false);
-  }
-
   const empty = messages.length === 0;
 
+  /* ---- Scrolling ---------------------------------------------------------
+     The old implementation called scrollIntoView on every render, which yanked
+     the page back down whenever a long report streamed in while you were
+     reading the one above it. Now the view only follows the stream while you
+     are already at the bottom; step away and a button offers the way back. */
+  const scroller = useRef<HTMLDivElement>(null);
+  const [pinned, setPinned] = useState(true);
+
+  const onScroll = useCallback(() => {
+    const el = scroller.current;
+    if (!el) return;
+    setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 140);
+  }, []);
+
+  const toBottom = useCallback((smooth = true) => {
+    const el = scroller.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  }, []);
+
+  useLayoutEffect(() => {
+    // Never on the empty state — the landing view must open at its headline,
+    // not at the bottom of the page.
+    if (empty || !pinned) return;
+    toBottom(messages.length > 1);
+  }, [messages, status, pinned, empty, toBottom]);
+
+  const submit = useCallback(
+    (text: string) => {
+      if (!text.trim() || busy) return;
+      clearError?.();
+      setPinned(true);
+      sendMessage({ text });
+      setInput("");
+    },
+    [busy, clearError, sendMessage],
+  );
+
+  const openAnalysis = useCallback((id: AnalysisId) => {
+    setPicker(false);
+    setForm(id);
+  }, []);
+
+  function newSession() {
+    stop();
+    setMessages([]);
+    setInput("");
+    setPinned(true);
+  }
+
+  // Cmd/Ctrl+K focuses the composer from anywhere — the one shortcut a person
+  // in a hurry will try.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        document.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
-    <main className="relative mx-auto flex h-dvh w-full max-w-3xl flex-col px-4 sm:px-6">
-      {/* arcane watermark — depth behind the conversation */}
-      <div
-        aria-hidden
-        className="pointer-events-none fixed inset-0 -z-10 flex items-center justify-center overflow-hidden"
-      >
-        <RiftEmblem size={640} className="animate-spin-slow opacity-[0.04]" />
-      </div>
-
-      {/* ───────── Header ───────── */}
-      <header className="pt-6 pb-4">
-        <div className="flex items-center gap-3.5">
-          <div className="relative shrink-0">
-            <div className="absolute inset-0 animate-bloom rounded-full bg-arcane/20 blur-md" />
-            {busy && <StreamRing />}
-            <RiftEmblem size={46} className="relative" />
-          </div>
-          <div className="min-w-0">
-            <h1 className="wordmark text-xl font-semibold leading-none sm:text-2xl">
-              RIFT ANALYST
-            </h1>
-            <p className="mt-1.5 text-[0.7rem] uppercase tracking-[0.22em] text-parch-dim sm:text-xs">
-              Summoner&apos;s Rift Intelligence
-            </p>
-          </div>
-          <div className="ml-auto hidden items-center gap-2 rounded-full border border-gold-deep/40 bg-navy/60 px-3 py-1.5 text-[0.65rem] uppercase tracking-wider text-parch sm:flex">
-            <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-arcane opacity-75" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-arcane" />
-            </span>
-            Haiku&nbsp;4.5
-          </div>
+    <div className="flex h-dvh w-full overflow-hidden">
+      {/* ───────── Rail (desktop) ───────── */}
+      <aside className="hidden w-[var(--rail)] shrink-0 flex-col border-r border-edge bg-s1/40 lg:flex">
+        <div className="px-5 pb-5 pt-6">
+          <Wordmark />
         </div>
-        <div className="hex-divider mt-4" />
-      </header>
 
-      {/* ───────── Conversation ───────── */}
-      <div
-        className={
-          "flex-1 overflow-y-auto pb-6 pt-1 " +
-          (empty ? "flex flex-col justify-center" : "space-y-5")
-        }
-      >
-        {empty && (
-          <div className="animate-rise pb-8">
-            <div className="mb-7 text-center">
-              <p className="text-[0.7rem] uppercase tracking-[0.3em] text-gold/80">
-                Channel the data
-              </p>
-              <h2 className="mt-2 font-display text-2xl font-semibold text-cream sm:text-[1.7rem]">
-                Scout any player, matchup, or meta
-              </h2>
-              <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-parch">
-                Live player records from the Riot API, fused with champion meta
-                &amp; builds from OP.GG — read on the current patch.
-              </p>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              {SUGGESTIONS.map((s, i) => (
+        <nav aria-label="Analyses" className="px-3">
+          <p className="label px-2 pb-2">Analyses</p>
+          <ul className="space-y-0.5">
+            {ANALYSES.map((a) => (
+              <li key={a.id}>
                 <button
-                  key={s.text}
-                  onClick={() => submit(s.text)}
-                  style={{ animationDelay: `${120 + i * 80}ms` }}
-                  className="group relative animate-rise overflow-hidden rounded-lg border border-gold-deep/45 bg-gradient-to-b from-panel/80 to-navy/90 p-4 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-gold/60 hover:shadow-[0_8px_30px_-12px_rgba(10,200,185,0.45)]"
+                  type="button"
+                  onClick={() => setForm(a.id)}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left text-[length:var(--step-ui)] text-t2 transition-colors hover:bg-s2 hover:text-t1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-t1"
                 >
-                  {/* hover sheen — arcane bloom from the corner */}
-                  <span className="pointer-events-none absolute inset-0 bg-[radial-gradient(130%_120%_at_0%_0%,rgba(10,200,185,0.14),transparent_55%)] opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
-                  {/* left rune accent */}
-                  <span className="absolute left-0 top-1/2 h-0 w-[2px] -translate-y-1/2 bg-gradient-to-b from-gold to-gold-deep transition-all duration-300 group-hover:h-3/4" />
-
-                  <span className="relative inline-flex items-center rounded-full border border-gold-deep/50 bg-void/50 px-2.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.18em] text-gold/80 transition-colors group-hover:text-gold">
-                    {s.tag}
+                  <span className="shrink-0 text-t3">
+                    <Icon name={a.icon} size={15} />
                   </span>
-                  <span className="relative mt-2.5 flex items-start gap-2 text-sm leading-snug text-cream/90">
-                    <span className="flex-1">{s.text}</span>
-                    <span className="mt-0.5 shrink-0 text-gold/40 transition-all duration-300 group-hover:translate-x-0.5 group-hover:text-gold">
-                      →
-                    </span>
-                  </span>
+                  <span className="truncate">{a.name}</span>
                 </button>
-              ))}
-            </div>
-          </div>
-        )}
+              </li>
+            ))}
+          </ul>
+        </nav>
 
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            className={
-              "animate-rise " +
-              (m.role === "user" ? "flex justify-end" : "flex justify-start gap-3")
-            }
-          >
-            {m.role === "assistant" && (
-              <RiftEmblem size={26} className="mt-1 shrink-0 opacity-80" />
-            )}
-            <div
-              className={
-                m.role === "user"
-                  ? "max-w-[85%] rounded-xl rounded-tr-sm border border-gold-deep/50 bg-gradient-to-br from-gold-deep/20 to-navy/60 px-4 py-2.5 text-sm leading-relaxed text-cream"
-                  : "min-w-0 flex-1 rounded-xl rounded-tl-sm border border-arcane/15 bg-panel/70 px-4 py-3 text-sm leading-relaxed text-cream shadow-[inset_0_1px_0_rgba(240,230,210,0.04)]"
-              }
-            >
-              {m.parts.map((part, i) => {
-                if (part.type === "text") {
-                  return m.role === "user" ? (
-                    <span key={i} className="whitespace-pre-wrap">
-                      {part.text}
-                    </span>
-                  ) : (
-                    <Markdown key={i}>{part.text}</Markdown>
-                  );
-                }
-                if (isToolPart(part.type)) {
-                  return <ToolCard key={i} part={part as unknown as ToolPart} />;
-                }
-                return null;
-              })}
-            </div>
-          </div>
-        ))}
-
-        {status === "submitted" && (
-          <div className="flex items-center gap-3">
-            <RiftEmblem size={26} className="shrink-0 opacity-80" />
-            <div className="flex items-center gap-1.5 text-xs uppercase tracking-[0.2em] text-parch">
-              <span className="h-1.5 w-1.5 rounded-full bg-arcane" style={{ animation: "hex-pulse 1.2s ease-in-out infinite" }} />
-              <span className="h-1.5 w-1.5 rounded-full bg-arcane" style={{ animation: "hex-pulse 1.2s ease-in-out 0.2s infinite" }} />
-              <span className="h-1.5 w-1.5 rounded-full bg-arcane" style={{ animation: "hex-pulse 1.2s ease-in-out 0.4s infinite" }} />
-              <span className="ml-2 text-parch-dim">consulting the rift</span>
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <div className="rounded-md border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-loss/90">
-            The connection to the rift faltered. Ensure <code className="font-mono text-loss">RIOT_API_KEY</code> and{" "}
-            <code className="font-mono text-loss">ANTHROPIC_API_KEY</code> are set in{" "}
-            <code className="font-mono text-loss">.env.local</code>.
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* ───────── Console ───────── */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          submit(input);
-        }}
-        className="pb-5 pt-2"
-      >
-        <div className="mb-3 flex flex-wrap justify-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowCompare(true)}
-            className="inline-flex items-center gap-1.5 rounded-full border border-gold-deep/45 bg-navy/60 px-3.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-gold/80 transition-all hover:border-gold/60 hover:text-gold"
-          >
-            <span>⚔️</span> Compare two players
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowTeam(true)}
-            className="inline-flex items-center gap-1.5 rounded-full border border-gold-deep/45 bg-navy/60 px-3.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-gold/80 transition-all hover:border-gold/60 hover:text-gold"
-          >
-            <span>🛡️</span> Team overview
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowTeammates(true)}
-            className="inline-flex items-center gap-1.5 rounded-full border border-gold-deep/45 bg-navy/60 px-3.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-gold/80 transition-all hover:border-gold/60 hover:text-gold"
-          >
-            <span>🤝</span> Flex teammates
-          </button>
-        </div>
-        <div className="hex-divider mb-4" />
-        <div className="group flex items-center gap-2 rounded-lg border border-gold-deep/50 bg-navy/70 px-2 py-2 transition-all duration-300 focus-within:border-arcane/60 focus-within:shadow-[0_0_28px_-8px_rgba(10,200,185,0.45)]">
-          <RiftEmblem size={22} className="ml-1.5 shrink-0 opacity-50 transition-opacity group-focus-within:opacity-90" />
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about a player or the current meta…"
-            className="flex-1 bg-transparent px-1 py-1.5 text-sm text-cream placeholder:text-parch-dim focus:outline-none"
-          />
-          {busy ? (
+        <div className="mt-auto px-3 pb-5">
+          {!empty && (
             <button
               type="button"
-              onClick={stop}
-              className="rounded-md border border-loss/40 bg-loss/10 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-loss transition hover:bg-loss/20"
+              onClick={newSession}
+              className="mb-4 flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left text-[length:var(--step-ui)] text-t2 transition-colors hover:bg-s2 hover:text-t1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-t1"
             >
-              Stop
+              <span className="shrink-0 text-t3">
+                <Icon name="restart" size={15} />
+              </span>
+              New session
             </button>
-          ) : (
+          )}
+          <div className="rule rule-start mb-3" />
+          <dl className="space-y-1.5 px-2">
+            {[
+              { term: "Players", value: "Riot API" },
+              { term: "Meta", value: "OP.GG MCP" },
+            ].map((row) => (
+              <div key={row.term} className="flex items-baseline gap-2">
+                <dt className="label w-12 shrink-0">{row.term}</dt>
+                <dd className="m-0 text-[length:var(--step-label)] text-t2">{row.value}</dd>
+              </div>
+            ))}
+            <div className="flex items-baseline gap-2">
+              <dt className="label w-12 shrink-0">Agent</dt>
+              <dd className="m-0 flex items-center gap-1.5 text-[length:var(--step-label)] text-t2">
+                <span
+                  className={`inline-block h-1.5 w-1.5 rounded-full bg-t2 ${busy ? "animate-breathe" : "opacity-40"}`}
+                />
+                Haiku 4.5
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </aside>
+
+      {/* ───────── Main column ───────── */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Bar (mobile) */}
+        <header className="flex shrink-0 items-center gap-3 border-b border-edge px-4 py-3 lg:hidden">
+          <Wordmark compact />
+          <div className="ml-auto flex items-center gap-1">
+            {!empty && (
+              <Button variant="ghost" size="sm" onClick={newSession} className="!px-2">
+                <Icon name="restart" size={16} />
+                <span className="sr-only">New session</span>
+              </Button>
+            )}
+            <Button size="sm" onClick={() => setPicker(true)}>
+              Analyses
+            </Button>
+          </div>
+        </header>
+
+        <div className="relative min-h-0 flex-1">
+          <div
+            ref={scroller}
+            onScroll={onScroll}
+            className="h-full overflow-y-auto overscroll-contain px-4 sm:px-6"
+          >
+            <div className="mx-auto w-full max-w-[var(--measure)] pb-10">
+              {empty ? (
+                <EmptyState onPick={openAnalysis} onAsk={submit} />
+              ) : (
+                <div className="pt-6">
+                  {(messages as unknown as UIMessage[]).map((m, i) => (
+                    <Turn key={m.id} message={m} first={i === 0} />
+                  ))}
+                  {status === "submitted" && <Working />}
+
+                  {/* Streaming text char-by-char into a live region would flood
+                      a screen reader, so only the transition is announced. */}
+                  <p aria-live="polite" className="sr-only">
+                    {busy ? "Rift Analyst is working." : "Answer ready."}
+                  </p>
+
+                  {error && (
+                    <div
+                      role="alert"
+                      className="mt-5 rounded-xl border border-edge bg-s1 p-4 sm:p-5"
+                    >
+                      <p className="flex items-center gap-2 text-[length:var(--step-body)] font-medium text-t1">
+                        <span className="text-down">
+                          <Icon name="alert" size={16} />
+                        </span>
+                        That request didn&apos;t come back
+                      </p>
+                      <p className="mt-1.5 max-w-[60ch] text-[length:var(--step-ui)] leading-relaxed text-t2">
+                        The analysis service didn&apos;t respond. Riot&apos;s API rate-limits
+                        bursts, so a second attempt often works.
+                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Button size="sm" onClick={() => clearError?.()}>
+                          Dismiss
+                        </Button>
+                        <details className="text-[length:var(--step-label)] text-t3">
+                          <summary className="cursor-pointer select-none py-1">
+                            Running this locally?
+                          </summary>
+                          <p className="mono mt-1.5 leading-relaxed">
+                            Set RIOT_API_KEY and ANTHROPIC_API_KEY in .env.local. Riot dev keys
+                            expire every 24 hours.
+                          </p>
+                        </details>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Only offered when it is actually needed. */}
+          {!empty && !pinned && (
             <button
-              type="submit"
-              disabled={!input.trim()}
-              className="rounded-md border border-gold/60 bg-gradient-to-b from-gold/25 to-gold-deep/25 px-5 py-2 text-xs font-semibold uppercase tracking-wider text-gold-bright transition-all hover:from-gold/40 hover:to-gold-deep/40 hover:shadow-[0_0_18px_-4px_rgba(200,170,110,0.6)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:shadow-none"
+              type="button"
+              onClick={() => {
+                setPinned(true);
+                toBottom();
+              }}
+              className="animate-rise absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-edge2 bg-s2 px-3.5 py-2 text-[length:var(--step-ui)] text-t1 shadow-[0_8px_24px_-8px_rgba(0,0,0,0.8)] transition-colors hover:bg-s3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-t1"
             >
-              Send
+              <Icon name="arrowDown" size={14} />
+              Jump to latest
             </button>
           )}
         </div>
-        <p className="mt-2.5 text-center text-[0.65rem] text-parch-dim">
-          Player data · Riot API &nbsp;·&nbsp; Meta &amp; builds · OP.GG &nbsp;·&nbsp; Reasoned by Claude
-        </p>
-      </form>
 
-      {/* ───────── Compare modal ───────── */}
-      {showCompare && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-void/80 px-4 backdrop-blur-sm"
-          onClick={() => setShowCompare(false)}
-        >
-          <form
-            onClick={(e) => e.stopPropagation()}
-            onSubmit={(e) => {
-              e.preventDefault();
-              submitCompare();
-            }}
-            className="w-full max-w-md animate-rise rounded-xl border border-gold-deep/50 bg-gradient-to-b from-panel to-navy p-5 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.8)]"
-          >
-            <div className="flex items-center gap-2">
-              <span className="text-lg">⚔️</span>
-              <h3 className="font-display text-lg text-gold-bright">Compare Players</h3>
-              <button
-                type="button"
-                onClick={() => setShowCompare(false)}
-                className="ml-auto text-parch transition-colors hover:text-gold"
-                aria-label="Close"
-              >
-                ✕
-              </button>
-            </div>
-            <p className="mb-4 mt-1 text-xs text-parch-dim">
-              Last 50 ranked games · filter by role on the card · regions can differ
-            </p>
-
-            <PlayerInput label="Player 1" value={cmpA} onChange={setCmpA} />
-            <PlayerInput label="Player 2" value={cmpB} onChange={setCmpB} />
-
-            <label className="mb-1 block text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
-              Queue
-            </label>
-            <div className="mb-3 flex gap-1">
-              {QUEUE_OPTIONS.map((q) => (
-                <button
-                  key={q.value}
-                  type="button"
-                  onClick={() => setCmpQueue(q.value)}
-                  className={
-                    "flex-1 rounded-md border px-2 py-1.5 text-[0.7rem] uppercase tracking-wider transition-colors " +
-                    (cmpQueue === q.value
-                      ? "border-arcane/60 bg-arcane/10 text-arcane"
-                      : "border-gold-deep/40 bg-navy/70 text-parch hover:text-gold")
-                  }
-                >
-                  {q.label}
-                </button>
-              ))}
-            </div>
-
-            <button
-              type="submit"
-              disabled={!cmpA.riotId.trim() || !cmpB.riotId.trim() || busy}
-              className="mt-2 w-full rounded-md border border-gold/60 bg-gradient-to-b from-gold/25 to-gold-deep/25 py-2.5 text-xs font-semibold uppercase tracking-wider text-gold-bright transition-all hover:from-gold/40 hover:to-gold-deep/40 hover:shadow-[0_0_18px_-4px_rgba(200,170,110,0.6)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:shadow-none"
-            >
-              Compare
-            </button>
-          </form>
-        </div>
-      )}
-
-      {/* ───────── Team overview modal ───────── */}
-      {showTeam && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-void/80 px-4 backdrop-blur-sm"
-          onClick={() => setShowTeam(false)}
-        >
-          <form
-            onClick={(e) => e.stopPropagation()}
-            onSubmit={(e) => {
-              e.preventDefault();
-              submitTeam();
-            }}
-            className="max-h-[90dvh] w-full max-w-md animate-rise overflow-y-auto rounded-xl border border-gold-deep/50 bg-gradient-to-b from-panel to-navy p-5 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.8)]"
-          >
-            <div className="flex items-center gap-2">
-              <span className="text-lg">🛡️</span>
-              <h3 className="font-display text-lg text-gold-bright">Team Overview</h3>
-              <button
-                type="button"
-                onClick={() => setShowTeam(false)}
-                className="ml-auto text-parch transition-colors hover:text-gold"
-                aria-label="Close"
-              >
-                ✕
-              </button>
-            </div>
-            <p className="mb-4 mt-1 text-xs text-parch-dim">
-              2–5 players · last 15 ranked games · roles &amp; picks suggested
-            </p>
-
-            <div className="mb-3 flex items-center gap-2">
-              <label className="text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
-                Region (all)
-              </label>
-              <select
-                value={teamRegion}
-                onChange={(e) => {
-                  setTeamRegion(e.target.value);
-                  setTeam((prev) => prev.map((p) => ({ ...p, region: e.target.value })));
-                }}
-                className="rounded-md border border-gold-deep/50 bg-navy/70 px-2 py-1.5 text-sm text-cream focus:border-arcane/60 focus:outline-none"
-              >
-                {REGIONS.map((r) => (
-                  <option key={r} value={r} className="bg-navy text-cream">
-                    {r}
-                  </option>
-                ))}
-              </select>
-              <span className="text-[0.6rem] text-parch-dim">sets every row</span>
-            </div>
-
-            {team.map((p, i) => (
-              <PlayerInput
-                key={i}
-                label={`Player ${i + 1}`}
-                value={p}
-                onChange={(v) =>
-                  setTeam((prev) => prev.map((row, idx) => (idx === i ? v : row)))
-                }
-              />
-            ))}
-
-            <label className="mb-1 block text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
-              Queue
-            </label>
-            <div className="mb-3 flex gap-1">
-              {QUEUE_OPTIONS.map((q) => (
-                <button
-                  key={q.value}
-                  type="button"
-                  onClick={() => setTeamQueue(q.value)}
-                  className={
-                    "flex-1 rounded-md border px-2 py-1.5 text-[0.7rem] uppercase tracking-wider transition-colors " +
-                    (teamQueue === q.value
-                      ? "border-arcane/60 bg-arcane/10 text-arcane"
-                      : "border-gold-deep/40 bg-navy/70 text-parch hover:text-gold")
-                  }
-                >
-                  {q.label}
-                </button>
-              ))}
-            </div>
-
-            <label className="mb-1 block text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
-              Bans <span className="text-parch-dim">(optional)</span>
-            </label>
-            <input
-              value={teamBans}
-              onChange={(e) => setTeamBans(e.target.value)}
-              placeholder="e.g. Yuumi, Zed, Darius"
-              className="mb-3 w-full rounded-md border border-gold-deep/50 bg-navy/70 px-3 py-2 text-sm text-cream placeholder:text-parch-dim focus:border-arcane/60 focus:outline-none"
-            />
-
-            <label className="mb-1 block text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
-              Enemy picks <span className="text-parch-dim">(optional)</span>
-            </label>
-            <input
-              value={teamEnemy}
-              onChange={(e) => setTeamEnemy(e.target.value)}
-              placeholder="e.g. Malphite, Kai'Sa"
-              className="mb-3 w-full rounded-md border border-gold-deep/50 bg-navy/70 px-3 py-2 text-sm text-cream placeholder:text-parch-dim focus:border-arcane/60 focus:outline-none"
-            />
-
-            <button
-              type="submit"
-              disabled={teamValid < 2 || busy}
-              className="mt-2 w-full rounded-md border border-gold/60 bg-gradient-to-b from-gold/25 to-gold-deep/25 py-2.5 text-xs font-semibold uppercase tracking-wider text-gold-bright transition-all hover:from-gold/40 hover:to-gold-deep/40 hover:shadow-[0_0_18px_-4px_rgba(200,170,110,0.6)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:shadow-none"
-            >
-              Build Overview
-            </button>
-          </form>
-        </div>
-      )}
-
-      {/* ───────── Flex teammates modal ───────── */}
-      {showTeammates && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-void/80 px-4 backdrop-blur-sm"
-          onClick={() => setShowTeammates(false)}
-        >
-          <form
-            onClick={(e) => e.stopPropagation()}
-            onSubmit={(e) => {
-              e.preventDefault();
-              submitTeammates();
-            }}
-            className="max-h-[90dvh] w-full max-w-md animate-rise overflow-y-auto rounded-xl border border-gold-deep/50 bg-gradient-to-b from-panel to-navy p-5 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.8)]"
-          >
-            <div className="flex items-center gap-2">
-              <span className="text-lg">🤝</span>
-              <h3 className="font-display text-lg text-gold-bright">Flex Teammates</h3>
-              <button
-                type="button"
-                onClick={() => setShowTeammates(false)}
-                className="ml-auto text-parch transition-colors hover:text-gold"
-                aria-label="Close"
-              >
-                ✕
-              </button>
-            </div>
-            <p className="mb-4 mt-1 text-xs text-parch-dim">
-              2–5 friends · only the Flex games you played together · who&apos;s carrying &amp; how to win more
-            </p>
-
-            <div className="mb-3 flex items-center gap-2">
-              <label className="text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
-                Region
-              </label>
-              <select
-                value={tmRegion}
-                onChange={(e) => setTmRegion(e.target.value)}
-                className="rounded-md border border-gold-deep/50 bg-navy/70 px-2 py-1.5 text-sm text-cream focus:border-arcane/60 focus:outline-none"
-              >
-                {REGIONS.map((r) => (
-                  <option key={r} value={r} className="bg-navy text-cream">
-                    {r}
-                  </option>
-                ))}
-              </select>
-              <span className="text-[0.6rem] text-parch-dim">Flex is region-locked</span>
-            </div>
-
-            {teammates.map((riotId, i) => (
-              <div key={i} className="mb-2">
-                <input
-                  value={riotId}
-                  onChange={(e) =>
-                    setTeammates((prev) => prev.map((v, idx) => (idx === i ? e.target.value : v)))
-                  }
-                  placeholder={`Teammate ${i + 1} · Name#TAG`}
-                  className="w-full rounded-md border border-gold-deep/50 bg-navy/70 px-3 py-2 text-sm text-cream placeholder:text-parch-dim focus:border-arcane/60 focus:outline-none"
-                />
-              </div>
-            ))}
-
-            <button
-              type="submit"
-              disabled={tmValid < 2 || busy}
-              className="mt-3 w-full rounded-md border border-gold/60 bg-gradient-to-b from-gold/25 to-gold-deep/25 py-2.5 text-xs font-semibold uppercase tracking-wider text-gold-bright transition-all hover:from-gold/40 hover:to-gold-deep/40 hover:shadow-[0_0_18px_-4px_rgba(200,170,110,0.6)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:shadow-none"
-            >
-              Compare Teammates
-            </button>
-          </form>
-        </div>
-      )}
-    </main>
-  );
-}
-
-function PlayerInput({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: PlayerField;
-  onChange: (v: PlayerField) => void;
-}) {
-  return (
-    <div className="mb-3">
-      <label className="mb-1 block text-[0.65rem] uppercase tracking-[0.15em] text-gold/70">
-        {label}
-      </label>
-      <div className="flex gap-2">
-        <input
-          value={value.riotId}
-          onChange={(e) => onChange({ ...value, riotId: e.target.value })}
-          placeholder="Name#TAG"
-          className="min-w-0 flex-1 rounded-md border border-gold-deep/50 bg-navy/70 px-3 py-2 text-sm text-cream placeholder:text-parch-dim focus:border-arcane/60 focus:outline-none"
+        <Composer
+          value={input}
+          onChange={setInput}
+          onSubmit={() => submit(input)}
+          onStop={stop}
+          busy={busy}
+          onOpenAnalyses={() => setPicker(true)}
         />
-        <select
-          value={value.region}
-          onChange={(e) => onChange({ ...value, region: e.target.value })}
-          className="rounded-md border border-gold-deep/50 bg-navy/70 px-2 py-2 text-sm text-cream focus:border-arcane/60 focus:outline-none"
-        >
-          {REGIONS.map((r) => (
-            <option key={r} value={r} className="bg-navy text-cream">
-              {r}
-            </option>
-          ))}
-        </select>
       </div>
+
+      <AnalysisPicker open={picker} onClose={() => setPicker(false)} onPick={openAnalysis} />
+      <AnalysisForms
+        active={form}
+        onClose={() => setForm(null)}
+        onSubmit={submit}
+        busy={busy}
+      />
     </div>
   );
 }
 
-/** Channeling ring — orbits the emblem while the agent works. */
-function StreamRing() {
+function Wordmark({ compact = false }: { compact?: boolean }) {
   return (
-    <span className="pointer-events-none absolute left-1/2 top-1/2 h-[66px] w-[66px] -translate-x-1/2 -translate-y-1/2">
-      <span className="absolute inset-0 rounded-full border border-gold/25" />
-      {/* counter-rotating dashed rune ring */}
-      <span
-        className="absolute inset-[3px] animate-spin rounded-full border border-dashed border-gold/30"
-        style={{ animationDuration: "9s", animationDirection: "reverse" }}
-      />
-      {/* orbiting arcane node */}
-      <span className="absolute inset-0 animate-spin" style={{ animationDuration: "6s" }}>
-        <span className="absolute left-1/2 top-0 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-arcane shadow-[0_0_8px_2px_rgba(10,200,185,0.7)]" />
+    <div className="flex items-center gap-2.5">
+      <span className="shrink-0 text-t1">
+        <Mark size={compact ? 24 : 28} />
       </span>
-    </span>
+      <span className="min-w-0">
+        <h1 className="display truncate text-[length:var(--step-lead)] text-t1">Rift Analyst</h1>
+        {!compact && <p className="label mt-1">Ranked scouting</p>}
+      </span>
+    </div>
   );
 }

@@ -1,75 +1,130 @@
 @import "tailwindcss";
 
-/* ============================================================
-   RIFT ANALYST — Hextech design system
-   Palette + type lifted from the League of Legends client:
-   deep teal voids, hextech gold hairlines, arcane cyan glow.
-   ============================================================ */
+/* ============================================================================
+   RIFT ANALYST — design tokens
+
+   Thesis: this is a measurement instrument, so hue is a data channel.
+   The interface chrome is entirely achromatic (ink → paper greys). Every
+   saturated colour on screen belongs to the data: a series identity, or a
+   polarity (above / below a role's average). Nothing decorative is coloured.
+
+   Two consequences worth knowing before you edit:
+     1. Do not introduce a coloured button, border, or accent. Emphasis in the
+        chrome is carried by value + weight (invert the chip, brighten the ink).
+     2. Series colours are a fixed, validated order — see --series-1..5 below.
+        They are assigned by slot, never cycled, never re-assigned on sort.
+   ========================================================================= */
 
 @theme inline {
-  /* Voids & surfaces */
-  --color-void: #010a13;
-  --color-abyss: #04111d;
-  --color-navy: #091a28;
-  --color-panel: #0a1c2b;
-  --color-teal-panel: #0a323c;
-  --color-steel: #1e2328;
+  /* ---- Surfaces (cool near-black, one hue family, four steps) ---- */
+  --color-ink: #0b0e14; /* page plane */
+  --color-s1: #11151e; /* card / chart surface */
+  --color-s2: #171d28; /* raised: inputs, chips, rows */
+  --color-s3: #1d2430; /* hover / pressed */
 
-  /* Hextech gold */
-  --color-gold: #c8aa6e;
-  --color-gold-bright: #f0e6d2;
-  --color-gold-deep: #785a28;
-  --color-gold-dark: #463714;
+  /* ---- Hairlines ---- */
+  --color-edge: #222a38;
+  --color-edge2: #2e3846;
 
-  /* Arcane teal */
-  --color-arcane: #0ac8b9;
-  --color-arcane-deep: #0397ab;
+  /* ---- Ink: a three-step ladder, every step AA on the WORST surface it can
+     land on (--color-s2, the raised one) rather than only on the page plane:
+       t1 14.1:1 · t2 7.9:1 · t3 4.9:1
+     The 11px mono labels are normal-size text under WCAG, so 4.5:1 is the bar
+     they have to clear — which is what pushed t3 up from its first value. */
+  --color-t1: #e6ebf4;
+  --color-t2: #a7b2c6;
+  --color-t3: #808b9f;
 
-  /* Text */
-  --color-cream: #f0e6d2;
-  --color-parch: #a09b8c;
-  --color-parch-dim: #5b5a56;
+  /* ---- Polarity / status (reserved — never used as a series) ----
+     Direction of a meter always carries the sign too, so these are a
+     redundant encoding rather than the only one. */
+  --color-up: #35c48d;
+  --color-down: #f0555f;
 
-  /* Outcomes */
-  --color-win: #2ad17c;
-  --color-loss: #ff4655;
+  /* ---- Categorical series, fixed slot order ----
+     Validated (OKLab ΔE, dark surface #11151E) with the dataviz validator:
+       · all five clear the adjacent-pair CVD + normal-vision floors
+       · only the FIRST THREE clear the all-pairs floors, so at most three
+         series may share one plot. Four or more → small multiples.
+     Every slot sits inside the L 0.48–0.67 data band; the chrome never does,
+     which is why a data colour can never be mistaken for an affordance. */
+  --color-series-1: #3a8fe8; /* azure   */
+  --color-series-2: #c88420; /* amber   */
+  --color-series-3: #d3548f; /* magenta */
+  --color-series-4: #8570f0; /* violet  */
+  --color-series-5: #1fa9ae; /* teal    */
 
-  /* Extra series tints — 4th/5th teammate on the comparison radar (tier crest hues) */
-  --color-diamond: #6fa8ff;
-  --color-master: #c25ce0;
-
-  --font-display: var(--font-cinzel);
-  --font-sans: var(--font-hanken);
-  --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-bricolage);
+  --font-sans: var(--font-instrument);
+  --font-mono: var(--font-plex);
 }
 
 :root {
   color-scheme: dark;
+
+  /* Type scale. Nothing meaningful renders below 11px. */
+  --step-label: 0.6875rem; /* 11 — mono caps, the smallest legible unit */
+  --step-ui: 0.8125rem; /* 13 */
+  --step-body: 0.9375rem; /* 15 */
+  --step-lead: 1.0625rem; /* 17 */
+  --step-title: 1.25rem; /* 20 */
+  --step-display: 2rem; /* 32 */
+  --step-hero: 2.6rem; /* 41.6 — landing headline only */
+
+  /* Layout */
+  /* The column reports live in. Prose inside it is held to ~66ch separately:
+     a report wants width, a paragraph does not. */
+  --rail: 15rem;
+  --measure: 50rem;
 }
+
+/* ============================================================================
+   Base
+   ========================================================================= */
 
 html {
   height: 100%;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   min-height: 100%;
+  background: var(--color-ink);
+  color: var(--color-t1);
   font-family: var(--font-sans), system-ui, sans-serif;
-  color: var(--color-cream);
-  background-color: #010a13;
-  /* Layered atmosphere: arcane teal bloom (top), gold ember (bottom),
-     and a faint hex weave woven into the void. */
-  background-image:
-    radial-gradient(120% 80% at 50% -10%, rgba(10, 200, 185, 0.10), transparent 55%),
-    radial-gradient(90% 60% at 80% 110%, rgba(200, 170, 110, 0.08), transparent 60%),
-    radial-gradient(70% 50% at 15% 100%, rgba(3, 151, 171, 0.07), transparent 60%),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100' viewBox='0 0 56 100'%3E%3Cpath d='M28 0L56 16.18V49.18L28 65.36L0 49.18V16.18ZM28 65.36L56 81.54' fill='none' stroke='%23c8aa6e' stroke-opacity='0.035' stroke-width='1'/%3E%3C/svg%3E");
-  background-attachment: fixed;
+  font-size: var(--step-body);
+  line-height: 1.6;
+  font-feature-settings: "ss01";
+  -webkit-font-smoothing: antialiased;
 }
 
-/* ---- Selection & scrollbar ---- */
+/* A single, very quiet vertical gradient so the page has a horizon rather than
+   being a flat void. No pattern, no glow — the reports supply the colour. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(180deg, #131926 0%, var(--color-ink) 42%);
+}
+
 ::selection {
-  background: rgba(10, 200, 185, 0.3);
-  color: #f0e6d2;
+  background: var(--color-t1);
+  color: var(--color-ink);
+}
+
+/* ---- Focus: one rule, everywhere, achromatic and unmissable ---- */
+:focus-visible {
+  outline: 2px solid var(--color-t1);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ---- Scrollbars: hairline, no chrome colour ---- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-edge2) transparent;
 }
 ::-webkit-scrollbar {
   width: 10px;
@@ -79,169 +134,217 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: linear-gradient(#785a28, #463714);
-  border: 2px solid transparent;
+  background: var(--color-edge2);
+  border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(#c8aa6e, #785a28);
+  background: var(--color-t3);
   background-clip: padding-box;
 }
 
-/* ============================================================
-   Keyframes
-   ============================================================ */
+/* Native select popups inherit the page, not the OS light theme. */
+option {
+  background: var(--color-s2);
+  color: var(--color-t1);
+}
+
+/* ============================================================================
+   Typography helpers
+   ========================================================================= */
+
+/* Every measurement on screen is monospaced. Prose is not. The rule is what
+   makes a number recognisable as a measured value before it is read. */
+.mono {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "zero";
+}
+
+/* Field labels, eyebrows, axis names. */
+.label {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: var(--step-label);
+  line-height: 1.3;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-t3);
+}
+
+.display {
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.02;
+}
+
+/* ============================================================================
+   The baseline rule — the structural motif
+
+   A hairline with a tick at its centre. It is the same picture as every stat
+   meter in the app: the centre is the role average, and everything is read as
+   a displacement from it. Used as the section divider so the page's structure
+   states the product's thesis.
+   ========================================================================= */
+.rule {
+  position: relative;
+  height: 1px;
+  background: var(--color-edge);
+}
+.rule::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  width: 1px;
+  height: 5px;
+  background: var(--color-t3);
+}
+.rule-start::after {
+  left: 0;
+}
+
+/* ============================================================================
+   Motion — small, purposeful, and fully switched off on request
+   ========================================================================= */
+
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(14px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
-@keyframes bloom {
-  0%, 100% {
-    opacity: 0.55;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.05);
-  }
-}
-@keyframes scan {
-  0% {
-    transform: translateX(-100%);
-  }
+@keyframes breathe {
+  0%,
   100% {
-    transform: translateX(220%);
-  }
-}
-@keyframes hex-pulse {
-  0%, 100% {
-    opacity: 0.25;
-    transform: scale(0.85);
+    opacity: 0.35;
   }
   50% {
     opacity: 1;
-    transform: scale(1);
-  }
-}
-@keyframes spin-slow {
-  to {
-    transform: rotate(360deg);
   }
 }
 @keyframes sweep {
   from {
-    background-position: -160% 0;
+    transform: translateX(-100%);
   }
   to {
-    background-position: 260% 0;
+    transform: translateX(400%);
   }
 }
-
-/* ============================================================
-   Utilities
-   ============================================================ */
-
-/* Engraved gold wordmark */
-.wordmark {
-  font-family: var(--font-display), serif;
-  background: linear-gradient(180deg, #f4ead2 0%, #c8aa6e 45%, #a17e3e 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  letter-spacing: 0.18em;
+@keyframes draw {
+  from {
+    stroke-dashoffset: var(--dash, 1000);
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
 }
-
-/* Hextech divider: a hairline with a centered gem node */
-.hex-divider {
-  position: relative;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(200, 170, 110, 0.5) 18%,
-    rgba(200, 170, 110, 0.5) 82%,
-    transparent
-  );
-}
-.hex-divider::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 7px;
-  height: 7px;
-  translate: -50% -50%;
-  rotate: 45deg;
-  background: #c8aa6e;
-  box-shadow: 0 0 8px rgba(200, 170, 110, 0.8);
-}
-
-/* Corner-bracketed hextech panel */
-.hex-frame {
-  position: relative;
-  background:
-    linear-gradient(160deg, rgba(10, 50, 60, 0.35), rgba(9, 26, 40, 0.55));
-  border: 1px solid rgba(120, 90, 40, 0.45);
-}
-.hex-frame::before,
-.hex-frame::after {
-  content: "";
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border: 1px solid var(--color-gold);
-  opacity: 0.85;
-  transition: opacity 0.25s ease;
-}
-.hex-frame::before {
-  top: -1px;
-  left: -1px;
-  border-right: none;
-  border-bottom: none;
-}
-.hex-frame::after {
-  bottom: -1px;
-  right: -1px;
-  border-left: none;
-  border-top: none;
+@keyframes grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
 }
 
 .animate-rise {
-  animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: rise 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-.animate-bloom {
-  animation: bloom 3.5s ease-in-out infinite;
-}
-.animate-spin-slow {
-  animation: spin-slow 24s linear infinite;
+.animate-breathe {
+  animation: breathe 1.6s ease-in-out infinite;
 }
 
-/* Shimmering "analyzing" scan bar */
-.scan-bar {
+/* The only "working" affordance: a hairline that sweeps the top of a running
+   card. One element, one property, no glow. */
+.sweep {
   position: absolute;
-  inset: 0;
+  inset-inline: 0;
+  top: 0;
+  height: 1px;
   overflow: hidden;
-  pointer-events: none;
 }
-.scan-bar::before {
+.sweep::after {
   content: "";
   position: absolute;
-  top: 0;
-  left: 0;
-  width: 35%;
-  height: 100%;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(10, 200, 185, 0.18),
-    transparent
-  );
-  animation: scan 1.6s ease-in-out infinite;
+  inset-block: 0;
+  width: 25%;
+  background: linear-gradient(90deg, transparent, var(--color-t2), transparent);
+  animation: sweep 1.4s ease-in-out infinite;
+}
+
+/* Meters and radar polygons animate in once, from the baseline outward. */
+.meter-fill {
+  animation: grow 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.radar-draw {
+  animation: draw 0.7s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .sweep::after {
+    display: none;
+  }
+}
+
+/* ============================================================================
+   Dialog — one modal implementation, native <dialog>
+   Focus trap, Esc, and inert background come from the platform.
+   ========================================================================= */
+
+dialog::backdrop {
+  background: color-mix(in srgb, #05070b 78%, transparent);
+  backdrop-filter: blur(3px);
+}
+dialog {
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  overflow: visible;
+}
+dialog:not([open]) {
+  display: none;
+}
+
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes sheet-in-mobile {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+.sheet-panel {
+  animation: sheet-in 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@media (max-width: 639px) {
+  .sheet-panel {
+    animation-name: sheet-in-mobile;
+  }
 }
